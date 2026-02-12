@@ -287,8 +287,11 @@ def save_video_directly_from_tensor(frames, save_path, fps=30, quality=5):
         w.append_data(frame)
     w.close()
 
-def pad_frames_to_match_original(processed_frames_dir, original_frame_count, output_dir):
-    """将处理后的帧填补到原始视频的帧数"""
+def pad_frames_to_match_original_uniform(processed_frames_dir, original_frame_count, output_dir):
+    """
+    改进的帧填补方法：将缺失帧均匀插入到视频序列中
+    方案：每间隔N帧插入一帧，确保最终帧数等于原始帧数
+    """
     os.makedirs(output_dir, exist_ok=True)
     
     # 获取处理后的帧
@@ -296,28 +299,66 @@ def pad_frames_to_match_original(processed_frames_dir, original_frame_count, out
     processed_frames.sort()
     processed_count = len(processed_frames)
     
-    print(f"📊📊 填补前: 处理{processed_count}帧, 需要{original_frame_count}帧")
+    frames_needed = original_frame_count - processed_count
+    print(f"📊📊 均匀填补: 处理{processed_count}帧, 需要{original_frame_count}帧, 需填补{frames_needed}帧")
     
-    if processed_count >= original_frame_count:
+    if frames_needed <= 0:
         # 如果处理后的帧数多于或等于原始帧数，直接复制前N帧
         for i in range(original_frame_count):
-            if i < len(processed_frames):
-                src_path = os.path.join(processed_frames_dir, processed_frames[i])
-                dst_path = os.path.join(output_dir, f"frame_{i:06d}.png")
-                shutil.copy2(src_path, dst_path)
-    else:
-        # 如果处理后的帧数少于原始帧数，进行填补
-        # 复制处理后的帧
-        for i in range(processed_count):
             src_path = os.path.join(processed_frames_dir, processed_frames[i])
             dst_path = os.path.join(output_dir, f"frame_{i:06d}.png")
             shutil.copy2(src_path, dst_path)
+        final_count_actual = original_frame_count
+    else:
+        # === 核心改进：计算均匀插入的间隔 ===
+        # 计算理论插入间隔（向下取整）
+        interval = max(1, processed_count // (frames_needed + 1))
+        print(f"🎯 均匀填补: 每 {interval} 帧后插入1帧，共需插入 {frames_needed} 帧")
         
-        # 用最后一帧填补剩余帧
-        last_frame_path = os.path.join(processed_frames_dir, processed_frames[-1])
-        for i in range(processed_count, original_frame_count):
-            dst_path = os.path.join(output_dir, f"frame_{i:06d}.png")
-            shutil.copy2(last_frame_path, dst_path)
+        # 构建新的帧序列
+        new_frame_list = []
+        processed_idx = 0
+        insertions_made = 0
+        
+        # 遍历所有处理后的帧
+        for i in range(processed_count):
+            # 添加当前处理帧
+            src_path = os.path.join(processed_frames_dir, processed_frames[i])
+            dst_filename = f"frame_{len(new_frame_list):06d}.png"
+            dst_path = os.path.join(output_dir, dst_filename)
+            shutil.copy2(src_path, dst_path)
+            new_frame_list.append(dst_path)
+            
+            # 判断是否需要在此处插入一帧（在特定间隔后插入，且不是最后一帧）
+            # 条件：(i+1)能被间隔整除，还有剩余帧需要插入，且不是处理序列的最后一帧
+            if ((i + 1) % interval == 0 and 
+                insertions_made < frames_needed and 
+                i < processed_count - 1):
+                
+                # 选择要插入的帧：使用当前帧或前一个帧，以达到平滑过渡
+                # 这里使用当前帧进行复制（效果类似于短暂停留）
+                insert_src_path = os.path.join(processed_frames_dir, processed_frames[i])
+                insert_dst_filename = f"frame_{len(new_frame_list):06d}.png"
+                insert_dst_path = os.path.join(output_dir, insert_dst_filename)
+                shutil.copy2(insert_src_path, insert_dst_path)
+                
+                new_frame_list.append(insert_dst_path)
+                insertions_made += 1
+                print(f"  → 插入第 {insertions_made}/{frames_needed} 帧，位置在原始帧 {i+1} 之后")
+        
+        # 如果还有未插入的帧（通常因为末尾不足一个间隔），在末尾补齐
+        while insertions_made < frames_needed:
+            # 使用最后一帧进行补齐
+            src_path = os.path.join(processed_frames_dir, processed_frames[-1])
+            dst_filename = f"frame_{len(new_frame_list):06d}.png"
+            dst_path = os.path.join(output_dir, dst_filename)
+            shutil.copy2(src_path, dst_path)
+            
+            new_frame_list.append(dst_path)
+            insertions_made += 1
+            print(f"  → 末尾补齐第 {insertions_made}/{frames_needed} 帧")
+        
+        final_count_actual = len(new_frame_list)
     
     # 验证最终帧数
     final_frames = [f for f in os.listdir(output_dir) if f.endswith('.png')]
@@ -326,8 +367,18 @@ def pad_frames_to_match_original(processed_frames_dir, original_frame_count, out
     
     if final_count_actual != original_frame_count:
         print(f"❌❌ 帧数验证失败: 期望{original_frame_count}, 实际{final_count_actual}")
+        # 强制调整到正确帧数
+        if final_count_actual < original_frame_count:
+            # 如果还是少了，用最后一帧补齐
+            last_frame_path = os.path.join(output_dir, f"frame_{final_count_actual-1:06d}.png")
+            for i in range(final_count_actual, original_frame_count):
+                dst_path = os.path.join(output_dir, f"frame_{i:06d}.png")
+                shutil.copy2(last_frame_path, dst_path)
+                final_frames.append(dst_path)
+                print(f"  → 强制补齐第 {i-final_count_actual+1} 帧")
+            final_count_actual = original_frame_count
     else:
-        print(f"✅ 帧数验证成功: {final_count_actual}帧")
+        print(f"✅ 帧数验证成功: {final_count_actual}帧，使用均匀填补法")
     
     return [os.path.join(output_dir, f) for f in final_frames]
 
@@ -516,7 +567,7 @@ def init_pipeline(gpu_id=0):
     return pipe, device
 
 def process_video_finalization(args):
-    """处理视频最终化任务（只处理视频流，无音频）"""
+    """处理视频最终化任务（使用改进的均匀填补法）"""
     temp_dir, video_tensor, temp_video_path, final_video_path, original_fps, original_frame_count, original_duration, is_video_file, input_path, use_direct_method = args
     
     try:
@@ -524,12 +575,12 @@ def process_video_finalization(args):
         print(f"  使用帧率: {original_fps:.6f} FPS, 期望帧数: {original_frame_count}")
         
         if use_direct_method:
-            # 直接方法：从张量直接创建视频
-            print("🎯 使用直接方法：从张量直接创建视频")
+            # 直接方法：从张量直接创建视频（仅在帧数完全匹配时使用）
+            print("🎯 使用直接方法：从张量直接创建视频（帧数完全匹配）")
             save_video_directly_from_tensor(video_tensor, temp_video_path, fps=original_fps, quality=5)
         else:
-            # 传统方法：通过PNG序列创建视频
-            print("📁 使用传统方法：通过PNG序列创建视频")
+            # 传统方法：通过PNG序列创建视频，使用均匀填补法
+            print("📁 使用改进方法：通过PNG序列创建视频，使用均匀填补法")
             video_frames = tensor2video(video_tensor)
             
             # 1. 先保存为PNG序列帧
@@ -537,14 +588,14 @@ def process_video_finalization(args):
             saved_frame_paths = save_frames_as_png(video_frames, processed_frames_dir, "frame")
             print(f"✓ PNG序列帧保存完成: {len(saved_frame_paths)}帧")
             
-            # 2. 填补到原始视频的帧数（如果是视频文件）
+            # 2. 使用均匀填补法填补到原始视频的帧数
             final_frames_dir = os.path.join(temp_dir, "final_frames")
-            if is_video_file and original_frame_count > 0:
-                print(f"填补帧数: {len(saved_frame_paths)} -> {original_frame_count}")
-                final_frame_paths = pad_frames_to_match_original(
+            if is_video_file and original_frame_count > 0 and len(saved_frame_paths) < original_frame_count:
+                print(f"🔧 使用均匀填补法: {len(saved_frame_paths)} -> {original_frame_count}")
+                final_frame_paths = pad_frames_to_match_original_uniform(
                     processed_frames_dir, original_frame_count, final_frames_dir)
             else:
-                # 对于图像序列，直接使用处理后的帧
+                # 对于图像序列或帧数已匹配的情况，直接使用处理后的帧
                 final_frame_paths = saved_frame_paths
                 original_frame_count = len(saved_frame_paths)
             
@@ -574,6 +625,12 @@ def process_video_finalization(args):
                 print("🎯🎯 参数一致性: ✅ 完美匹配")
             else:
                 print("⚠️ 参数一致性: 部分参数有差异")
+                if not frame_match:
+                    print(f"  帧数差异: {final_info['frame_count']} vs {original_frame_count}")
+                if not fps_match:
+                    print(f"  帧率差异: {final_info['frame_rate']:.6f} vs {original_fps:.6f}")
+                if not duration_match:
+                    print(f"  时长差异: {final_info['duration']:.6f} vs {original_duration:.6f}")
         except Exception as e:
             print(f"⚠️ 无法验证最终文件参数: {e}")
         
@@ -595,7 +652,7 @@ def process_video_finalization(args):
         return False, final_video_path
 
 def main():
-    parser = argparse.ArgumentParser(description='FlashVSR视频超分辨率处理（纯视频流）')
+    parser = argparse.ArgumentParser(description='FlashVSR视频超分辨率处理（改进版均匀填补法）')
     parser.add_argument('--input', type=str, required=True, help='输入文件路径或目录路径')
     parser.add_argument('--output', type=str, default='./results', help='输出目录路径')
     parser.add_argument('--gpu', type=int, default=0, help='GPU设备ID (0, 1, 2, 3)')
@@ -607,7 +664,7 @@ def main():
     
     args = parser.parse_args()
     
-    print("=== FlashVSR GPU设置（纯视频流处理） ===")
+    print("=== FlashVSR GPU设置（改进版均匀填补法） ===")
     print(f"请求使用GPU: {args.gpu}")
     
     # 检查CUDA可用性
@@ -677,10 +734,10 @@ def main():
             print(f"[错误] 准备输入张量失败: {e}")
             continue
 
-        # 对于视频文件，显示信息（无音频处理）
+        # 对于视频文件，显示信息
         if is_video_file:
             print(f"✓ 视频文件信息: {original_frame_count}帧, {original_fps:.6f}fps, {original_duration:.6f}秒")
-            print("  纯视频处理模式（无音频）")
+            print(f"  处理后帧数: {processed_frame_count}帧 (需要填补 {original_frame_count - processed_frame_count} 帧)")
 
         try:
             print("开始FlashVSR处理...")
@@ -712,7 +769,9 @@ def main():
             if use_direct_method:
                 print("🎯 帧数匹配，使用直接方法创建视频（跳过PNG转换）")
             else:
-                print(f"📁 帧数不匹配，使用传统方法（处理{processed_frame_count}帧，需要{original_frame_count}帧）")
+                missing_frames = original_frame_count - processed_frame_count
+                print(f"📁 使用改进的均匀填补法: 处理{processed_frame_count}帧，需要{original_frame_count}帧，填补{missing_frames}帧")
+                print(f"  计算插入间隔: 每 {max(1, processed_frame_count // (missing_frames + 1))} 帧后插入1帧")
             
             # 生成输出文件名
             if os.path.isdir(input_path):
@@ -726,7 +785,7 @@ def main():
             
             # 准备最终视频路径
             temp_video_path = os.path.join(temp_dir, "temp_video.mp4")
-            final_video_filename = f"FlashVSR_v1.1_Tiny_Long_{base_name}_gpu{args.gpu}_seed{args.seed}.mp4"
+            final_video_filename = f"FlashVSR_v1.1_Tiny_Long_{base_name}_gpu{args.gpu}_seed{args.seed}_uniform.mp4"
             final_video_path = os.path.join(RESULT_ROOT, final_video_filename)
             
             # 提交并行处理任务
@@ -817,7 +876,7 @@ def main():
     print(f"❌❌ 失败: {failed_count} 个文件")
     print(f"📁📁 输出目录: {RESULT_ROOT}")
     print(f"🗑🗑️ 临时文件已清理")
-    print("🎯🎯 输出文件为纯视频流（无音频）")
+    print("🎯🎯 输出文件为纯视频流（无音频），使用均匀填补法优化帧数")
 
 if __name__ == "__main__":
     main()
