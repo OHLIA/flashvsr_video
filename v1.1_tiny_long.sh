@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os, re, time, argparse
+import os
+import re
+import time
+import argparse
 import numpy as np
 from PIL import Image
 import imageio
@@ -15,6 +18,7 @@ import json
 import threading
 import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import math
 
 # 添加 pymediainfo 导入
 try:
@@ -27,6 +31,19 @@ except ImportError:
 from diffsynth import ModelManager, FlashVSRTinyLongPipeline
 from utils.utils import Causal_LQ4x_Proj
 from utils.TCDecoder import build_tcdecoder
+
+# 全局变量用于记录日志信息
+log_context = {"current_task": 0, "total_tasks": 0, "parallel_tasks": 0}
+
+def log_message(message, task_id=None, parallel_tasks=None):
+    """统一的日志输出函数，支持任务序号和并行任务数标识"""
+    if task_id is None:
+        task_id = log_context.get("current_task", 0)
+    if parallel_tasks is None:
+        parallel_tasks = log_context.get("parallel_tasks", 0)
+    
+    prefix = f"[{task_id}/{parallel_tasks}]" if task_id > 0 else "[0/0]"
+    print(f"{prefix} {message}")
 
 def get_video_info_accurate(path):
     """使用 pymediainfo 获取精确的视频信息"""
@@ -70,10 +87,10 @@ def get_video_info_accurate(path):
         duration_ms = None
         if hasattr(video_track, 'duration') and video_track.duration:
             duration_ms = float(video_track.duration)
-            print(f"✅ 使用视频流时长: {duration_ms}ms")
+            log_message(f"使用视频流时长: {duration_ms}ms")
         elif hasattr(general_track, 'duration') and general_track.duration:
             duration_ms = float(general_track.duration)
-            print(f"⚠️ 使用容器时长: {duration_ms}ms")
+            log_message(f"使用容器时长: {duration_ms}ms")
         
         # 计算时长（秒）
         duration_seconds = duration_ms / 1000.0 if duration_ms else None
@@ -102,9 +119,9 @@ def get_video_info_accurate(path):
         # 验证数据一致性
         calculated_frames = int(round(duration_seconds * frame_rate))
         if abs(calculated_frames - frame_count) > 2:  # 允许2帧误差
-            print(f"⚠️ 帧数不一致: 统计={frame_count}, 计算={calculated_frames}, 使用统计值")
+            log_message(f"帧数不一致: 统计={frame_count}, 计算={calculated_frames}, 使用统计值")
         
-        print(f"📊📊 pymediainfo 精确信息: {frame_count}帧, {frame_rate:.6f}fps, {duration_seconds:.6f}秒")
+        log_message(f"pymediainfo 精确信息: {frame_count}帧, {frame_rate:.6f}fps, {duration_seconds:.6f}秒")
         
         return {
             'frame_count': frame_count,
@@ -116,7 +133,7 @@ def get_video_info_accurate(path):
         }
         
     except Exception as e:
-        print(f"❌❌ pymediainfo 解析失败: {e}，使用备用方法")
+        log_message(f"pymediainfo 解析失败: {e}，使用备用方法")
         return get_video_info_fallback(path)
 
 def get_video_info_fallback(path):
@@ -174,7 +191,7 @@ def get_video_info_fallback(path):
             width = int(stream.get('width', 0))
             height = int(stream.get('height', 0))
             
-            print(f"📊📊 ffprobe 信息: {frame_count}帧, {frame_rate:.6f}fps, {duration:.6f}秒")
+            log_message(f"ffprobe 信息: {frame_count}帧, {frame_rate:.6f}fps, {duration:.6f}秒")
             
             return {
                 'frame_count': frame_count,
@@ -186,7 +203,7 @@ def get_video_info_fallback(path):
             }
     
     except Exception as e:
-        print(f"❌❌ 备用方法也失败: {e}")
+        log_message(f"备用方法也失败: {e}")
     
     # 最终备用值
     return {
@@ -250,29 +267,6 @@ def pil_to_tensor_neg1_1(img: Image.Image, dtype=torch.bfloat16, device='cuda'):
     t = t.permute(2,0,1) / 255.0 * 2.0 - 1.0
     return t.to(dtype)
 
-def save_frames_as_png(frames, output_dir, base_name="frame"):
-    """保存帧序列为PNG图片"""
-    os.makedirs(output_dir, exist_ok=True)
-    saved_paths = []
-    
-    for i, frame in enumerate(tqdm(frames, desc=f"Saving PNG frames")):
-        filename = f"{base_name}_{i:06d}.png"
-        filepath = os.path.join(output_dir, filename)
-        frame.save(filepath, 'PNG')
-        saved_paths.append(filepath)
-    
-    return saved_paths
-
-def save_video_from_frames(frame_paths, save_path, fps=30, quality=5):
-    """从帧路径列表创建视频"""
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    w = imageio.get_writer(save_path, fps=fps, quality=quality)
-    
-    for frame_path in tqdm(frame_paths, desc=f"Creating video {os.path.basename(save_path)}"):
-        frame = Image.open(frame_path)
-        w.append_data(np.array(frame))
-    w.close()
-
 def save_video_directly_from_tensor(frames, save_path, fps=30, quality=5):
     """直接从张量创建视频，跳过PNG中间步骤"""
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -286,101 +280,6 @@ def save_video_directly_from_tensor(frames, save_path, fps=30, quality=5):
         frame = frames_array[i]
         w.append_data(frame)
     w.close()
-
-def pad_frames_to_match_original_uniform(processed_frames_dir, original_frame_count, output_dir):
-    """
-    改进的帧填补方法：将缺失帧均匀插入到视频序列中
-    方案：每间隔N帧插入一帧，确保最终帧数等于原始帧数
-    """
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # 获取处理后的帧
-    processed_frames = [f for f in os.listdir(processed_frames_dir) if f.endswith('.png')]
-    processed_frames.sort()
-    processed_count = len(processed_frames)
-    
-    frames_needed = original_frame_count - processed_count
-    print(f"📊📊 均匀填补: 处理{processed_count}帧, 需要{original_frame_count}帧, 需填补{frames_needed}帧")
-    
-    if frames_needed <= 0:
-        # 如果处理后的帧数多于或等于原始帧数，直接复制前N帧
-        for i in range(original_frame_count):
-            src_path = os.path.join(processed_frames_dir, processed_frames[i])
-            dst_path = os.path.join(output_dir, f"frame_{i:06d}.png")
-            shutil.copy2(src_path, dst_path)
-        final_count_actual = original_frame_count
-    else:
-        # === 核心改进：计算均匀插入的间隔 ===
-        # 计算理论插入间隔（向下取整）
-        interval = max(1, processed_count // (frames_needed + 1))
-        print(f"🎯 均匀填补: 每 {interval} 帧后插入1帧，共需插入 {frames_needed} 帧")
-        
-        # 构建新的帧序列
-        new_frame_list = []
-        processed_idx = 0
-        insertions_made = 0
-        
-        # 遍历所有处理后的帧
-        for i in range(processed_count):
-            # 添加当前处理帧
-            src_path = os.path.join(processed_frames_dir, processed_frames[i])
-            dst_filename = f"frame_{len(new_frame_list):06d}.png"
-            dst_path = os.path.join(output_dir, dst_filename)
-            shutil.copy2(src_path, dst_path)
-            new_frame_list.append(dst_path)
-            
-            # 判断是否需要在此处插入一帧（在特定间隔后插入，且不是最后一帧）
-            # 条件：(i+1)能被间隔整除，还有剩余帧需要插入，且不是处理序列的最后一帧
-            if ((i + 1) % interval == 0 and 
-                insertions_made < frames_needed and 
-                i < processed_count - 1):
-                
-                # 选择要插入的帧：使用当前帧或前一个帧，以达到平滑过渡
-                # 这里使用当前帧进行复制（效果类似于短暂停留）
-                insert_src_path = os.path.join(processed_frames_dir, processed_frames[i])
-                insert_dst_filename = f"frame_{len(new_frame_list):06d}.png"
-                insert_dst_path = os.path.join(output_dir, insert_dst_filename)
-                shutil.copy2(insert_src_path, insert_dst_path)
-                
-                new_frame_list.append(insert_dst_path)
-                insertions_made += 1
-                print(f"  → 插入第 {insertions_made}/{frames_needed} 帧，位置在原始帧 {i+1} 之后")
-        
-        # 如果还有未插入的帧（通常因为末尾不足一个间隔），在末尾补齐
-        while insertions_made < frames_needed:
-            # 使用最后一帧进行补齐
-            src_path = os.path.join(processed_frames_dir, processed_frames[-1])
-            dst_filename = f"frame_{len(new_frame_list):06d}.png"
-            dst_path = os.path.join(output_dir, dst_filename)
-            shutil.copy2(src_path, dst_path)
-            
-            new_frame_list.append(dst_path)
-            insertions_made += 1
-            print(f"  → 末尾补齐第 {insertions_made}/{frames_needed} 帧")
-        
-        final_count_actual = len(new_frame_list)
-    
-    # 验证最终帧数
-    final_frames = [f for f in os.listdir(output_dir) if f.endswith('.png')]
-    final_frames.sort()
-    final_count_actual = len(final_frames)
-    
-    if final_count_actual != original_frame_count:
-        print(f"❌❌ 帧数验证失败: 期望{original_frame_count}, 实际{final_count_actual}")
-        # 强制调整到正确帧数
-        if final_count_actual < original_frame_count:
-            # 如果还是少了，用最后一帧补齐
-            last_frame_path = os.path.join(output_dir, f"frame_{final_count_actual-1:06d}.png")
-            for i in range(final_count_actual, original_frame_count):
-                dst_path = os.path.join(output_dir, f"frame_{i:06d}.png")
-                shutil.copy2(last_frame_path, dst_path)
-                final_frames.append(dst_path)
-                print(f"  → 强制补齐第 {i-final_count_actual+1} 帧")
-            final_count_actual = original_frame_count
-    else:
-        print(f"✅ 帧数验证成功: {final_count_actual}帧，使用均匀填补法")
-    
-    return [os.path.join(output_dir, f) for f in final_frames]
 
 def compute_scaled_and_target_dims(w0: int, h0: int, scale: float = 4.0, multiple: int = 128):
     if w0 <= 0 or h0 <= 0:
@@ -429,12 +328,12 @@ def prepare_input_tensor(path: str, scale: float = 4, dtype=torch.bfloat16, devi
         
         is_video_input = True
         
-        print(f"🎯🎯 精确视频信息: {original_frame_count}帧, {original_fps:.6f}fps, {original_duration:.6f}秒, {w0}x{h0}")
+        log_message(f"精确视频信息: {original_frame_count}帧, {original_fps:.6f}fps, {original_duration:.6f}秒, {w0}x{h0}")
         
         # 验证数据一致性
         calculated_frames = int(round(original_duration * original_fps))
         if abs(calculated_frames - original_frame_count) > 1:
-            print(f"⚠️ 警告: 帧数不一致，使用统计值 {original_frame_count} 而非计算值 {calculated_frames}")
+            log_message(f"警告: 帧数不一致，使用统计值 {original_frame_count} 而非计算值 {calculated_frames}")
         
     else:
         # 图像序列处理（保持原逻辑）
@@ -449,11 +348,11 @@ def prepare_input_tensor(path: str, scale: float = 4, dtype=torch.bfloat16, devi
             original_duration = original_frame_count / original_fps
 
         is_video_input = False
-        print(f"📁📁 图像序列: {original_frame_count}帧, {original_fps}fps, {original_duration:.2f}秒, {w0}x{h0}")
+        log_message(f"图像序列: {original_frame_count}帧, {original_fps}fps, {original_duration:.2f}秒, {w0}x{h0}")
 
     # 计算目标尺寸
     sW, sH, tW, tH = compute_scaled_and_target_dims(w0, h0, scale=scale, multiple=128)
-    print(f"📐📐 缩放目标: {w0}x{h0} -> {sW}x{sH} -> {tW}x{tH} (x{scale:.2f})")
+    log_message(f"缩放目标: {w0}x{h0} -> {sW}x{sH} -> {tW}x{tH} (x{scale:.2f})")
 
     # 帧处理逻辑
     if is_video(path):
@@ -472,7 +371,7 @@ def prepare_input_tensor(path: str, scale: float = 4, dtype=torch.bfloat16, devi
         idx = idx[:F]
         processed_frame_count = F - 4  # 实际处理的帧数（减去填充）
         
-        print(f"🔄🔄 帧处理: 原始{total}帧 -> 填充后{F}帧 -> 实际处理{processed_frame_count}帧")
+        log_message(f"帧处理: 原始{total}帧 -> 填充后{F}帧 -> 实际处理{processed_frame_count}帧")
 
         frames = []
         try:
@@ -500,7 +399,7 @@ def prepare_input_tensor(path: str, scale: float = 4, dtype=torch.bfloat16, devi
         paths = paths[:F]
         processed_frame_count = F - 4
         
-        print(f"🔄🔄 帧处理: 原始{len(paths0)}帧 -> 填充后{F}帧 -> 实际处理{processed_frame_count}帧")
+        log_message(f"帧处理: 原始{len(paths0)}帧 -> 填充后{F}帧 -> 实际处理{processed_frame_count}帧")
 
         frames = []
         for p in paths:
@@ -520,10 +419,10 @@ def init_pipeline(gpu_id=0):
     
     # 检查GPU数量
     gpu_count = torch.cuda.device_count()
-    print(f"系统检测到 {gpu_count} 个GPU")
+    log_message(f"系统检测到 {gpu_count} 个GPU")
     
     for i in range(gpu_count):
-        print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+        log_message(f"GPU {i}: {torch.cuda.get_device_name(i)}")
     
     # 检查请求的GPU是否存在
     if gpu_id >= gpu_count:
@@ -533,8 +432,8 @@ def init_pipeline(gpu_id=0):
     device = f'cuda:{gpu_id}'
     torch.cuda.set_device(gpu_id)
     
-    print(f"正在使用GPU: {gpu_id} ({torch.cuda.get_device_name(gpu_id)})")
-    print(f"GPU内存: {torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3:.1f} GB")
+    log_message(f"正在使用GPU: {gpu_id} ({torch.cuda.get_device_name(gpu_id)})")
+    log_message(f"GPU内存: {torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3:.1f} GB")
     
     # 初始化模型管理器
     mm = ModelManager(torch_dtype=torch.bfloat16, device="cpu")
@@ -556,7 +455,7 @@ def init_pipeline(gpu_id=0):
     multi_scale_channels = [512, 256, 128, 128]
     pipe.TCDecoder = build_tcdecoder(new_channels=multi_scale_channels, new_latent_channels=16+768)
     mis = pipe.TCDecoder.load_state_dict(torch.load("./FlashVSR-v1.1/TCDecoder.ckpt"), strict=False)
-    print("TC解码器加载状态:", mis)
+    log_message(f"TC解码器加载状态: {mis}")
 
     # 将管道移动到GPU
     pipe.to(device)
@@ -567,79 +466,48 @@ def init_pipeline(gpu_id=0):
     return pipe, device
 
 def process_video_finalization(args):
-    """处理视频最终化任务（使用改进的均匀填补法）"""
-    temp_dir, video_tensor, temp_video_path, final_video_path, original_fps, original_frame_count, original_duration, is_video_file, input_path, use_direct_method = args
+    """处理视频最终化任务 - 直接方法版"""
+    task_id, parallel_tasks, temp_dir, video_tensor, temp_video_path, final_video_path, original_fps, original_frame_count, original_duration, is_video_file, input_path, _ = args
     
     try:
-        print(f"开始创建纯视频文件: {os.path.basename(final_video_path)}")
-        print(f"  使用帧率: {original_fps:.6f} FPS, 期望帧数: {original_frame_count}")
+        log_message(f"开始创建纯视频文件: {os.path.basename(final_video_path)}", task_id, parallel_tasks)
+        log_message(f"  使用帧率: {original_fps:.6f} FPS, 处理帧数: {video_tensor.shape[2]}", task_id, parallel_tasks)
         
-        if use_direct_method:
-            # 直接方法：从张量直接创建视频（仅在帧数完全匹配时使用）
-            print("🎯 使用直接方法：从张量直接创建视频（帧数完全匹配）")
-            save_video_directly_from_tensor(video_tensor, temp_video_path, fps=original_fps, quality=5)
-        else:
-            # 传统方法：通过PNG序列创建视频，使用均匀填补法
-            print("📁 使用改进方法：通过PNG序列创建视频，使用均匀填补法")
-            video_frames = tensor2video(video_tensor)
-            
-            # 1. 先保存为PNG序列帧
-            processed_frames_dir = os.path.join(temp_dir, "processed_frames")
-            saved_frame_paths = save_frames_as_png(video_frames, processed_frames_dir, "frame")
-            print(f"✓ PNG序列帧保存完成: {len(saved_frame_paths)}帧")
-            
-            # 2. 使用均匀填补法填补到原始视频的帧数
-            final_frames_dir = os.path.join(temp_dir, "final_frames")
-            if is_video_file and original_frame_count > 0 and len(saved_frame_paths) < original_frame_count:
-                print(f"🔧 使用均匀填补法: {len(saved_frame_paths)} -> {original_frame_count}")
-                final_frame_paths = pad_frames_to_match_original_uniform(
-                    processed_frames_dir, original_frame_count, final_frames_dir)
-            else:
-                # 对于图像序列或帧数已匹配的情况，直接使用处理后的帧
-                final_frame_paths = saved_frame_paths
-                original_frame_count = len(saved_frame_paths)
-            
-            # 3. 从帧路径创建视频
-            save_video_from_frames(final_frame_paths, temp_video_path, fps=original_fps, quality=5)
+        # 直接方法：从张量直接创建视频
+        log_message("使用直接方法：从张量直接创建视频（跳过PNG中转）", task_id, parallel_tasks)
         
-        print(f"✅ 视频创建完成: {os.path.basename(final_video_path)}")
+        # 创建视频目录
+        os.makedirs(os.path.dirname(temp_video_path), exist_ok=True)
+        
+        # 从张量直接创建视频
+        save_video_directly_from_tensor(video_tensor, temp_video_path, fps=original_fps, quality=5)
+        
+        log_message(f"视频创建完成: {os.path.basename(final_video_path)}", task_id, parallel_tasks)
         
         # 复制临时视频到最终路径
         shutil.copy(temp_video_path, final_video_path)
-        print(f"✅ 完成纯视频输出: {os.path.basename(final_video_path)}")
+        log_message(f"完成纯视频输出: {os.path.basename(final_video_path)}", task_id, parallel_tasks)
         
         # 验证最终文件参数
         try:
             final_info = get_video_info_accurate(final_video_path)
-            print(f"📊📊 最终视频参数:")
-            print(f"  帧数: {final_info['frame_count']} (原始: {original_frame_count})")
-            print(f"  帧率: {final_info['frame_rate']:.6f} (原始: {original_fps:.6f})")
-            print(f"  时长: {final_info['duration']:.6f}秒 (原始: {original_duration:.6f}秒)")
+            log_message(f"最终视频参数:", task_id, parallel_tasks)
+            log_message(f"  帧数: {final_info['frame_count']} (原始: {original_frame_count})", task_id, parallel_tasks)
+            log_message(f"  帧率: {final_info['frame_rate']:.6f} (原始: {original_fps:.6f})", task_id, parallel_tasks)
+            log_message(f"  时长: {final_info['duration']:.6f}秒", task_id, parallel_tasks)
             
             # 检查参数一致性
-            frame_match = abs(final_info['frame_count'] - original_frame_count) <= 1
             fps_match = abs(final_info['frame_rate'] - original_fps) < 0.01
-            duration_match = abs(final_info['duration'] - original_duration) < 0.1
             
-            if frame_match and fps_match and duration_match:
-                print("🎯🎯 参数一致性: ✅ 完美匹配")
+            if fps_match:
+                log_message("帧率一致性: ✅ 匹配", task_id, parallel_tasks)
             else:
-                print("⚠️ 参数一致性: 部分参数有差异")
-                if not frame_match:
-                    print(f"  帧数差异: {final_info['frame_count']} vs {original_frame_count}")
-                if not fps_match:
-                    print(f"  帧率差异: {final_info['frame_rate']:.6f} vs {original_fps:.6f}")
-                if not duration_match:
-                    print(f"  时长差异: {final_info['duration']:.6f} vs {original_duration:.6f}")
+                log_message(f"帧率差异: {final_info['frame_rate']:.6f} vs {original_fps:.6f}", task_id, parallel_tasks)
         except Exception as e:
-            print(f"⚠️ 无法验证最终文件参数: {e}")
+            log_message(f"无法验证最终文件参数: {e}", task_id, parallel_tasks)
         
         # 清理临时文件
         try:
-            if os.path.exists(os.path.join(temp_dir, "processed_frames")):
-                shutil.rmtree(os.path.join(temp_dir, "processed_frames"))
-            if os.path.exists(os.path.join(temp_dir, "final_frames")):
-                shutil.rmtree(os.path.join(temp_dir, "final_frames"))
             if os.path.exists(temp_video_path):
                 os.remove(temp_video_path)
         except:
@@ -648,13 +516,14 @@ def process_video_finalization(args):
         return True, final_video_path
         
     except Exception as e:
-        print(f"❌❌ 视频最终化失败 {os.path.basename(final_video_path)}: {e}")
+        log_message(f"视频最终化失败 {os.path.basename(final_video_path)}: {e}", task_id, parallel_tasks)
         return False, final_video_path
 
 def main():
-    parser = argparse.ArgumentParser(description='FlashVSR视频超分辨率处理（改进版均匀填补法）')
+    parser = argparse.ArgumentParser(description='FlashVSR视频超分辨率处理')
     parser.add_argument('--input', type=str, required=True, help='输入文件路径或目录路径')
     parser.add_argument('--output', type=str, default='./results', help='输出目录路径')
+    parser.add_argument('--preprocess', action='store_true', help='已移除：参数保留但无效')
     parser.add_argument('--gpu', type=int, default=0, help='GPU设备ID (0, 1, 2, 3)')
     parser.add_argument('--seed', type=int, default=0, help='随机种子')
     parser.add_argument('--scale', type=float, default=4.0, help='缩放比例')
@@ -664,20 +533,24 @@ def main():
     
     args = parser.parse_args()
     
-    print("=== FlashVSR GPU设置（改进版均匀填补法） ===")
-    print(f"请求使用GPU: {args.gpu}")
+    log_message("=== FlashVSR GPU设置 ===")
+    log_message(f"请求使用GPU: {args.gpu}")
     
     # 检查CUDA可用性
     if not torch.cuda.is_available():
-        print("错误: CUDA不可用，请检查CUDA安装")
+        log_message("错误: CUDA不可用，请检查CUDA安装")
         return
     
     gpu_count = torch.cuda.device_count()
-    print(f"系统检测到 {gpu_count} 个GPU")
+    log_message(f"系统检测到 {gpu_count} 个GPU")
     
     if args.gpu >= gpu_count:
-        print(f"错误: GPU {args.gpu} 不存在，可用GPU: 0-{gpu_count-1}")
+        log_message(f"错误: GPU {args.gpu} 不存在，可用GPU: 0-{gpu_count-1}")
         return
+    
+    # 提示预处理参数已移除
+    if args.preprocess:
+        log_message("注意: --preprocess 参数功能已移除，将跳过视频预处理")
     
     RESULT_ROOT = args.output
     os.makedirs(RESULT_ROOT, exist_ok=True)
@@ -685,26 +558,26 @@ def main():
     # 创建临时目录在输出目录下
     TEMP_ROOT = os.path.join(RESULT_ROOT, "temp")
     os.makedirs(TEMP_ROOT, exist_ok=True)
-    print(f"临时文件目录: {TEMP_ROOT}")
+    log_message(f"临时文件目录: {TEMP_ROOT}")
     
     # 获取输入文件列表
     try:
         input_files = get_input_files(args.input)
     except Exception as e:
-        print(f"输入文件错误: {e}")
+        log_message(f"输入文件错误: {e}")
         return
     
     if not input_files:
-        print(f"在路径 {args.input} 中没有找到支持的视频文件或图像序列")
+        log_message(f"在路径 {args.input} 中没有找到支持的视频文件或图像序列")
         return
     
-    print(f"找到 {len(input_files)} 个文件需要处理")
+    log_message(f"找到 {len(input_files)} 个文件需要处理")
     
     try:
         # 初始化管道
         pipe, device = init_pipeline(args.gpu)
     except Exception as e:
-        print(f"管道初始化失败: {e}")
+        log_message(f"管道初始化失败: {e}")
         return
     
     # 创建线程池用于并行处理
@@ -713,8 +586,12 @@ def main():
     
     # 处理每个文件
     for i, input_path in enumerate(input_files, 1):
-        print(f"\n=== 处理文件 {i}/{len(input_files)} ===")
-        print(f"输入: {input_path}")
+        log_message(f"=== 处理文件 {i}/{len(input_files)} ===")
+        log_message(f"输入: {input_path}")
+        
+        # 更新全局日志上下文
+        log_context["current_task"] = i
+        log_context["parallel_tasks"] = len(futures) + 1
         
         # 清理GPU内存
         torch.cuda.empty_cache()
@@ -726,21 +603,23 @@ def main():
         # 检查是否为视频文件
         is_video_file = is_video(input_path)
         
+        # 注意：FFmpeg预处理功能已移除
+        
         # 使用精确的视频信息获取
         try:
             LQ, th, tw, F, fps, from_video, original_fps, original_duration, original_frame_count, processed_frame_count = prepare_input_tensor(
                 input_path, scale=args.scale, dtype=torch.bfloat16, device=device)
         except Exception as e:
-            print(f"[错误] 准备输入张量失败: {e}")
+            log_message(f"[错误] 准备输入张量失败: {e}", i, len(futures)+1)
             continue
 
         # 对于视频文件，显示信息
         if is_video_file:
-            print(f"✓ 视频文件信息: {original_frame_count}帧, {original_fps:.6f}fps, {original_duration:.6f}秒")
-            print(f"  处理后帧数: {processed_frame_count}帧 (需要填补 {original_frame_count - processed_frame_count} 帧)")
+            log_message(f"视频文件信息: {original_frame_count}帧, {original_fps:.6f}fps, {original_duration:.6f}秒", i, len(futures)+1)
+            log_message(f"处理后帧数: {processed_frame_count}帧", i, len(futures)+1)
 
         try:
-            print("开始FlashVSR处理...")
+            log_message("开始FlashVSR处理...", i, len(futures)+1)
             video = pipe(
                 prompt="", 
                 negative_prompt="", 
@@ -762,16 +641,8 @@ def main():
             # 计算处理后的实际帧数（减去填充的帧）
             processed_frame_count = F - 4
             
-            # 判断是否可以使用直接方法
-            # 如果处理后的帧数等于原始帧数，使用直接方法
-            use_direct_method = (processed_frame_count == original_frame_count)
-            
-            if use_direct_method:
-                print("🎯 帧数匹配，使用直接方法创建视频（跳过PNG转换）")
-            else:
-                missing_frames = original_frame_count - processed_frame_count
-                print(f"📁 使用改进的均匀填补法: 处理{processed_frame_count}帧，需要{original_frame_count}帧，填补{missing_frames}帧")
-                print(f"  计算插入间隔: 每 {max(1, processed_frame_count // (missing_frames + 1))} 帧后插入1帧")
+            # 总是使用直接方法创建视频
+            log_message("使用直接方法：从张量直接创建视频（跳过PNG中转）", i, len(futures)+1)
             
             # 生成输出文件名
             if os.path.isdir(input_path):
@@ -781,82 +652,82 @@ def main():
             
             # 创建临时目录
             temp_dir = tempfile.mkdtemp(dir=TEMP_ROOT, prefix=f"temp_{base_name}_")
-            print(f"📁📁 临时目录: {temp_dir}")
+            log_message(f"临时目录: {temp_dir}", i, len(futures)+1)
             
             # 准备最终视频路径
             temp_video_path = os.path.join(temp_dir, "temp_video.mp4")
-            final_video_filename = f"FlashVSR_v1.1_Tiny_Long_{base_name}_gpu{args.gpu}_seed{args.seed}_uniform.mp4"
+            final_video_filename = f"FlashVSR_v1.1_Tiny_Long_{base_name}_gpu{args.gpu}_seed{args.seed}.mp4"
             final_video_path = os.path.join(RESULT_ROOT, final_video_filename)
             
             # 提交并行处理任务
-            print(f"🚀🚀 提交并行处理任务: {os.path.basename(final_video_path)}")
+            log_message(f"提交并行处理任务: {os.path.basename(final_video_path)}", i, len(futures)+1)
             future = executor.submit(process_video_finalization, (
-                temp_dir, video, temp_video_path, final_video_path, 
-                original_fps, original_frame_count, original_duration, is_video_file, input_path, use_direct_method
+                i, len(futures)+1, temp_dir, video, temp_video_path, final_video_path, 
+                original_fps, original_frame_count, original_duration, is_video_file, input_path, True
             ))
-            futures.append((future, final_video_path, temp_dir))
+            futures.append((future, final_video_path, temp_dir, i))
             
-            print(f"📊📊 当前并行任务数: {len(futures)}")
+            log_message(f"当前并行任务数: {len(futures)}", i, len(futures)+1)
             
             # 如果并行任务达到上限，等待部分任务完成
             if len(futures) >= args.max_workers * 2:
-                print("🔄🔄 达到并行任务上限，等待部分任务完成...")
+                log_message("达到并行任务上限，等待部分任务完成...", i, len(futures)+1)
                 completed_count = 0
-                for f, path, temp_dir in futures[:]:
+                for f, path, temp_dir, task_id in futures[:]:
                     if f.done():
                         try:
                             success, result_path = f.result(timeout=1)
                             if success:
-                                print(f"✅ 并行任务完成: {os.path.basename(result_path)}")
+                                log_message(f"并行任务完成: {os.path.basename(result_path)}", task_id, len(futures))
                             else:
-                                print(f"❌❌ 并行任务失败: {os.path.basename(result_path)}")
+                                log_message(f"并行任务失败: {os.path.basename(result_path)}", task_id, len(futures))
                             # 清理临时目录
                             try:
                                 shutil.rmtree(temp_dir)
-                                print(f"🗑🗑️ 清理临时目录: {os.path.basename(temp_dir)}")
+                                log_message(f"清理临时目录: {os.path.basename(temp_dir)}", task_id, len(futures))
                             except:
                                 pass
-                            futures.remove((f, path, temp_dir))
+                            futures.remove((f, path, temp_dir, task_id))
                             completed_count += 1
                         except:
                             pass
                 
                 if completed_count > 0:
-                    print(f"🔄🔄 已完成 {completed_count} 个任务，继续处理...")
+                    log_message(f"已完成 {completed_count} 个任务，继续处理...", i, len(futures)+1)
             
         except Exception as e:
-            print(f"[处理错误] {name}: {e}")
+            log_message(f"[处理错误] {name}: {e}", i, len(futures)+1)
             # 清理临时目录
             try:
                 shutil.rmtree(temp_dir)
-                print(f"🗑🗑️ 清理临时目录（错误时）: {os.path.basename(temp_dir)}")
+                log_message(f"清理临时目录（错误时）: {os.path.basename(temp_dir)}", i, len(futures)+1)
             except:
                 pass
             continue
 
-    print(f"\n🔄🔄 等待所有并行任务完成...")
+    log_message(f"等待所有并行任务完成...")
     
     # 等待所有剩余任务完成
     completed_count = 0
     failed_count = 0
     
-    for future, final_video_path, temp_dir in futures:
+    for future, final_video_path, temp_dir, task_id in futures:
         try:
             success, result_path = future.result(timeout=300)  # 5分钟超时
             if success:
-                print(f"✅ 任务完成: {os.path.basename(result_path)}")
+                log_message(f"任务完成: {os.path.basename(result_path)}", task_id, len(futures))
                 completed_count += 1
             else:
-                print(f"❌❌ 任务失败: {os.path.basename(result_path)}")
+                log_message(f"任务失败: {os.path.basename(result_path)}", task_id, len(futures))
                 failed_count += 1
         except Exception as e:
-            print(f"❌❌ 任务超时或失败 {os.path.basename(final_video_path)}: {e}")
+            log_message(f"任务超时或失败 {os.path.basename(final_video_path)}: {e}", task_id, len(futures))
             failed_count += 1
         finally:
             # 清理临时目录
             try:
                 shutil.rmtree(temp_dir)
-                print(f"🗑🗑️ 清理临时目录: {os.path.basename(temp_dir)}")
+                log_message(f"清理临时目录: {os.path.basename(temp_dir)}", task_id, len(futures))
             except:
                 pass
     
@@ -867,16 +738,16 @@ def main():
     try:
         if os.path.exists(TEMP_ROOT) and not os.listdir(TEMP_ROOT):
             shutil.rmtree(TEMP_ROOT)
-            print(f"🗑🗑️ 清理临时根目录: {TEMP_ROOT}")
+            log_message(f"清理临时根目录: {TEMP_ROOT}")
     except:
         pass
     
-    print(f"\n=== 所有文件处理完成 ===")
-    print(f"✅ 成功: {completed_count} 个文件")
-    print(f"❌❌ 失败: {failed_count} 个文件")
-    print(f"📁📁 输出目录: {RESULT_ROOT}")
-    print(f"🗑🗑️ 临时文件已清理")
-    print("🎯🎯 输出文件为纯视频流（无音频），使用均匀填补法优化帧数")
+    log_message(f"\n=== 所有文件处理完成 ===")
+    log_message(f"✅ 成功: {completed_count} 个文件")
+    log_message(f"❌ 失败: {failed_count} 个文件")
+    log_message(f"📁 输出目录: {RESULT_ROOT}")
+    log_message(f"🗑️ 临时文件已清理")
+    log_message("🎯 输出文件为纯视频流（无音频）")
 
 if __name__ == "__main__":
     main()
