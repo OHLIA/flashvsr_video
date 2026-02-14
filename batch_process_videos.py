@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ComfyUI FlashVSR 批量视频处理工具 - 最终修复版
-支持动态参数传递、自动检测视频帧数
+ComfyUI FlashVSR 批量视频处理工具 - 增强版（支持GPU选择）
+支持动态参数传递、自动检测视频帧数、GPU设备选择
 输出文件按照 ComfyUI 默认方法存储
-已修复：拼写错误、服务检测、参数传递问题
 """
 
 import json
@@ -143,7 +142,8 @@ class ComfyUI_FlashVSR_BatchProcessor:
         tile_size: int = 256,
         tile_overlap: int = 24,
         total_frames: Optional[int] = None,
-        frames_per_batch: int = 201
+        frames_per_batch: int = 201,
+        gpu_device: str = "auto"
     ) -> Dict:
         """
         更新工作流中的所有参数
@@ -157,6 +157,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
             tile_overlap: 分块重叠
             total_frames: 视频总帧数（如不提供则自动检测）
             frames_per_batch: 每批处理的帧数
+            gpu_device: GPU设备选择（auto, cuda:0, cuda:1等）
         """
         # 深拷贝工作流以避免修改原始模板
         modified_workflow = json.loads(json.dumps(workflow))
@@ -176,7 +177,30 @@ class ComfyUI_FlashVSR_BatchProcessor:
                 if "{{t_o}}" in str(node_data["inputs"].get("tile_overlap", "")):
                     node_data["inputs"]["tile_overlap"] = tile_overlap
         
-        # 3. 设置总帧数（节点50） - 增强兼容性
+        # 3. 设置 GPU 设备（节点5）
+        for node_id, node_data in modified_workflow.items():
+            if node_id == "5" and node_data.get("class_type") == "FlashVSRInitPipe":
+                if "{{gpu}}" in str(node_data["inputs"].get("device", "")):
+                    # 根据输入参数设置GPU设备
+                    if gpu_device == "auto":
+                        device_value = "auto"
+                    elif gpu_device.isdigit():
+                        device_value = f"cuda:{gpu_device}"
+                    else:
+                        device_value = gpu_device
+                    
+                    node_data["inputs"]["device"] = device_value
+                    print(f"✅ 已将GPU设备设置为: {device_value}")
+                elif isinstance(node_data["inputs"].get("device"), str):
+                    # 直接赋值
+                    if gpu_device.isdigit():
+                        device_value = f"cuda:{gpu_device}"
+                    else:
+                        device_value = gpu_device
+                    node_data["inputs"]["device"] = device_value
+                    print(f"✅ 已将GPU设备设置为: {device_value} (直接赋值)")
+        
+        # 4. 设置总帧数（节点50）
         if total_frames is None:
             # 自动获取视频帧数
             total_frames, _, _ = self.get_video_frame_count(video_path)
@@ -196,7 +220,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
                 else:
                     print(f"⚠️  节点 50 的值既不是占位符也不是数字: {current_value}")
         
-        # 4. 设置每批帧数（节点8）
+        # 5. 设置每批帧数（节点8）
         for node_id, node_data in modified_workflow.items():
             if node_id == "8" and node_data.get("class_type") == "PrimitiveInt":
                 if "{{FRAMES_PER_BATCH}}" in str(node_data["inputs"].get("value", "")):
@@ -206,7 +230,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
                     node_data["inputs"]["value"] = frames_per_batch
                     print(f"✅ 已将每批帧数 {frames_per_batch} 设置到节点 8 (直接赋值)")
         
-        # 5. 设置输出文件名前缀
+        # 6. 设置输出文件名前缀
         if output_prefix is None:
             # 使用输入视频文件名（不含扩展名）作为输出前缀
             base_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -240,7 +264,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
         # 显示工作流验证信息
         print("=== 工作流参数验证 ===")
         for node_id, node_data in workflow.items():
-            if node_id in ["8", "50"]:
+            if node_id in ["5", "8", "50"]:
                 print(f"节点 {node_id} ({node_data.get('class_type')}): {node_data['inputs']}")
 
         try:
@@ -354,7 +378,8 @@ class ComfyUI_FlashVSR_BatchProcessor:
         tile_size: int = 64,
         tile_overlap: int = 8,
         total_frames: Optional[int] = None,
-        frames_per_batch: int = 125
+        frames_per_batch: int = 125,
+        gpu_device: str = "auto"
     ) -> bool:
         """
         处理单个视频文件
@@ -368,6 +393,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
             tile_overlap: 分块重叠
             total_frames: 视频总帧数
             frames_per_batch: 每批处理的帧数
+            gpu_device: GPU设备选择
         
         返回:
             处理是否成功
@@ -381,7 +407,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
             print(f"❌ 文件不存在: {video_path}")
             return False
         
-        # 获取视频信息（总是获取帧率信息）
+        # 获取视频信息
         detected_total_frames, fps, detection_method = self.get_video_frame_count(video_path)
         
         # 如果手动指定了 total_frames，使用手动值，否则使用检测值
@@ -404,6 +430,14 @@ class ComfyUI_FlashVSR_BatchProcessor:
             seconds = int(duration_seconds % 60)
             print(f"⏱️  视频时长: {minutes}:{seconds:02d} (mm:ss)")
         
+        # 显示GPU设备信息
+        if gpu_device == "auto":
+            print(f"🎮 GPU设备: auto (自动选择)")
+        elif gpu_device.isdigit():
+            print(f"🎮 GPU设备: cuda:{gpu_device}")
+        else:
+            print(f"🎮 GPU设备: {gpu_device}")
+        
         # 更新工作流参数
         workflow = self.update_workflow_parameters(
             workflow_template, 
@@ -413,7 +447,8 @@ class ComfyUI_FlashVSR_BatchProcessor:
             tile_size=tile_size,
             tile_overlap=tile_overlap,
             total_frames=total_frames,
-            frames_per_batch=frames_per_batch
+            frames_per_batch=frames_per_batch,
+            gpu_device=gpu_device
         )
         
         # 提交任务
@@ -446,7 +481,8 @@ class ComfyUI_FlashVSR_BatchProcessor:
         tile_size: int = 256,
         tile_overlap: int = 24,
         total_frames: Optional[int] = None,
-        frames_per_batch: int = 201
+        frames_per_batch: int = 201,
+        gpu_device: str = "auto"
     ) -> Dict[str, bool]:
         """
         批量处理多个视频文件
@@ -460,6 +496,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
             tile_overlap: 分块重叠
             total_frames: 视频总帧数
             frames_per_batch: 每批处理的帧数
+            gpu_device: GPU设备选择
         
         返回:
             字典：{视频文件: 处理结果}
@@ -476,6 +513,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
         
         print(f"🎬 开始批量处理 {total_videos} 个视频")
         print(f"⚙️  参数: scale={scale}, tile_size={tile_size}, tile_overlap={tile_overlap}")
+        print(f"🎮 GPU设备: {gpu_device}")
         print(f"💾 输出: 文件将保存到 ComfyUI 默认输出目录")
         
         for i, video_path in enumerate(video_files, 1):
@@ -496,7 +534,8 @@ class ComfyUI_FlashVSR_BatchProcessor:
                 tile_size=tile_size,
                 tile_overlap=tile_overlap,
                 total_frames=total_frames,
-                frames_per_batch=frames_per_batch
+                frames_per_batch=frames_per_batch,
+                gpu_device=gpu_device
             )
             results[video_path] = success
         
@@ -506,6 +545,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
         print(f"{'='*60}")
         print(f"✅ 成功: {sum(1 for r in results.values() if r)}/{total_videos}")
         print(f"❌ 失败: {sum(1 for r in results.values() if not r)}/{total_videos}")
+        print(f"🎮 GPU设备: {gpu_device}")
         print(f"💾 输出位置: ComfyUI 默认输出目录")
         
         return results
@@ -560,27 +600,40 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description='ComfyUI FlashVSR 批量视频处理工具 - 最终修复版',
+        description='ComfyUI FlashVSR 批量视频处理工具 - 增强版（支持GPU选择）',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
-  # 处理单个视频文件
-  python batch_process_videos.py --input video.mp4
+  # 处理单个视频文件，使用GPU 0
+  python batch_process_videos.py --input video.mp4 --gpu 0
   
-  # 处理目录下的所有视频文件
-  python batch_process_videos.py --input ./videos
+  # 处理目录下的所有视频文件，使用GPU 1
+  python batch_process_videos.py --input ./videos --gpu 1
+  
+  # 自动选择GPU
+  python batch_process_videos.py --input ./videos --gpu auto
+  
+  # 使用cuda:1指定GPU
+  python batch_process_videos.py --input ./videos --gpu cuda:1
   
   # 处理目录下的特定格式视频
-  python batch_process_videos.py --input ./videos --pattern "*.mp4"
+  python batch_process_videos.py --input ./videos --pattern "*.mp4" --gpu 0
   
   # 自定义参数
-  python batch_process_videos.py --input ./videos --scale 2.0 --tile-size 128
+  python batch_process_videos.py --input ./videos --scale 2.0 --tile-size 128 --gpu 0
   
   # 手动指定总帧数
-  python batch_process_videos.py --input ./videos --total-frames 300
+  python batch_process_videos.py --input ./videos --total-frames 300 --gpu 0
   
   # 设置输出文件前缀
-  python batch_process_videos.py --input ./videos --output-prefix batch_001
+  python batch_process_videos.py --input ./videos --output-prefix batch_001 --gpu 0
+
+支持的GPU设备值:
+  auto      - 自动选择可用GPU
+  0, 1, 2   - 指定GPU编号 (会自动转换为cuda:0, cuda:1, cuda:2)
+  cuda:0    - 直接指定CUDA设备
+  cuda:1    - 直接指定CUDA设备
+  cpu       - 使用CPU（不推荐，速度慢）
 
 注意：
   1. 输出文件将保存到 ComfyUI 默认输出目录，路径由 ComfyUI 控制
@@ -600,7 +653,7 @@ def main():
     input_group.add_argument('--pattern', type=str, default='*.mp4',
                            help='视频文件匹配模式，当输入是目录时使用 (默认: *.mp4)')
     
-    # 输出参数（仅保留文件名前缀，不包含路径）
+    # 输出参数
     output_group = parser.add_argument_group('输出选项')
     output_group.add_argument('--output-prefix', type=str, 
                             help='输出文件名前缀（可选，用于区分批次）')
@@ -617,6 +670,11 @@ def main():
                                 help='每批处理的帧数 (默认: 201)')
     processing_group.add_argument('--total-frames', type=int,
                                 help='视频总帧数 (如不提供则自动检测)')
+    
+    # GPU参数
+    gpu_group = parser.add_argument_group('GPU选项')
+    gpu_group.add_argument('--gpu', type=str, default='auto',
+                         help='GPU设备选择: auto, 0, 1, 2, cuda:0, cuda:1等 (默认: auto)')
     
     # 系统参数
     system_group = parser.add_argument_group('系统参数')
@@ -665,6 +723,14 @@ def main():
     if args.output_prefix:
         print(f"  output_prefix: {args.output_prefix} (输出文件名前缀)")
     
+    # 显示GPU设备信息
+    if args.gpu == "auto":
+        print(f"🎮 GPU设备: auto (自动选择)")
+    elif args.gpu.isdigit():
+        print(f"🎮 GPU设备: cuda:{args.gpu}")
+    else:
+        print(f"🎮 GPU设备: {args.gpu}")
+    
     print(f"💾 输出位置: ComfyUI 默认输出目录")
     
     # 初始化处理器
@@ -681,7 +747,8 @@ def main():
         tile_size=args.tile_size,
         tile_overlap=args.tile_overlap,
         total_frames=args.total_frames,
-        frames_per_batch=args.frames_per_batch
+        frames_per_batch=args.frames_per_batch,
+        gpu_device=args.gpu
     )
     
     # 计算总耗时
