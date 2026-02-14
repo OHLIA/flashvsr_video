@@ -1,0 +1,303 @@
+{
+  "1": {
+    "inputs": {
+      "scale": "{{scale}}",
+      "color_fix": true,
+      "tiled_vae": true,
+      "tiled_dit": true,
+      "tile_size": "{{t_z}}",
+      "tile_overlap": "{{t_o}}",
+      "unload_dit": true,
+      "sparse_ratio": 2,
+      "kv_ratio": 3,
+      "local_range": 11,
+      "seed": 765473230196164,
+      "pipe": [
+        "5",
+        0
+      ],
+      "frames": [
+        "49",
+        0
+      ]
+    },
+    "class_type": "FlashVSRNodeAdv",
+    "_meta": {
+      "title": "FlashVSR Ultra-Fast (Advanced)"
+    }
+  },
+  "5": {
+    "inputs": {
+      "model": "FlashVSR-v1.1",
+      "mode": "tiny-long",
+      "alt_vae": "none",
+      "force_offload": true,
+      "precision": "fp16",
+      "device": "{{gpu}}",
+      "attention_mode": "block_sparse_attention"
+    },
+    "class_type": "FlashVSRInitPipe",
+    "_meta": {
+      "title": "FlashVSR Init Pipeline"
+    }
+  },
+  "6": {
+    "inputs": {
+      "total": [
+        "38",
+        0
+      ]
+    },
+    "class_type": "easy forLoopStart",
+    "_meta": {
+      "title": "For循环-起始"
+    }
+  },
+  "7": {
+    "inputs": {
+      "flow": [
+        "6",
+        0
+      ],
+      "initial_value1": [
+        "36",
+        0
+      ]
+    },
+    "class_type": "easy forLoopEnd",
+    "_meta": {
+      "title": "For循环-结束"
+    }
+  },
+  "8": {
+    "inputs": {
+      "value": "{{FRAMES_PER_BATCH}}"
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "per_batch"
+    }
+  },
+  "10": {
+    "inputs": {
+      "a": [
+        "6",
+        1
+      ],
+      "b": [
+        "8",
+        0
+      ],
+      "operation": "multiply"
+    },
+    "class_type": "easy mathInt",
+    "_meta": {
+      "title": "整数运算"
+    }
+  },
+  "20": {
+    "inputs": {
+      "comparison": "a < b",
+      "a": [
+        "23",
+        0
+      ],
+      "b": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "easy compare",
+    "_meta": {
+      "title": "比较"
+    }
+  },
+  "23": {
+    "inputs": {
+      "a": [
+        "50",
+        0
+      ],
+      "b": [
+        "10",
+        0
+      ],
+      "operation": "subtract"
+    },
+    "class_type": "easy mathInt",
+    "_meta": {
+      "title": "整数运算"
+    }
+  },
+  "29": {
+    "inputs": {
+      "number_a": [
+        "30",
+        0
+      ],
+      "number_b": [
+        "31",
+        0
+      ],
+      "boolean": [
+        "20",
+        0
+      ]
+    },
+    "class_type": "Number Input Switch",
+    "_meta": {
+      "title": "数字切换"
+    }
+  },
+  "30": {
+    "inputs": {
+      "int": [
+        "23",
+        0
+      ]
+    },
+    "class_type": "Int To Number (mtb)",
+    "_meta": {
+      "title": "整数到数字"
+    }
+  },
+  "31": {
+    "inputs": {
+      "int": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "Int To Number (mtb)",
+    "_meta": {
+      "title": "整数到数字"
+    }
+  },
+  "36": {
+    "inputs": {
+      "any_1": [
+        "6",
+        2
+      ],
+      "any_2": [
+        "62",
+        0
+      ]
+    },
+    "class_type": "easy batchAnything",
+    "_meta": {
+      "title": "任何批次组合"
+    }
+  },
+  "38": {
+    "inputs": {
+      "expression": "ceil(a/b)",
+      "a": [
+        "50",
+        0
+      ],
+      "b": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "MathExpression|pysssss",
+    "_meta": {
+      "title": "数学表达式"
+    }
+  },
+  "46": {
+    "inputs": {
+      "preview": "",
+      "source": [
+        "29",
+        2
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "预览任意"
+    }
+  },
+  "49": {
+    "inputs": {
+      "video": "{{VIDEO_PATH}}",
+      "force_rate": 0,
+      "custom_width": 0,
+      "custom_height": 0,
+      "frame_load_cap": [
+        "29",
+        2
+      ],
+      "skip_first_frames": [
+        "10",
+        0
+      ],
+      "select_every_nth": 1,
+      "format": "AnimateDiff"
+    },
+    "class_type": "VHS_LoadVideo",
+    "_meta": {
+      "title": "加载视频"
+    }
+  },
+  "50": {
+    "inputs": {
+      "value": "{{TOTAL_FRAMES}}"
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "总帧数"
+    }
+  },
+  "52": {
+    "inputs": {
+      "video_info": [
+        "49",
+        3
+      ]
+    },
+    "class_type": "VHS_VideoInfoSource",
+    "_meta": {
+      "title": "视频信息（初始）"
+    }
+  },
+  "62": {
+    "inputs": {
+      "frame_rate": [
+        "52",
+        0
+      ],
+      "loop_count": 0,
+      "filename_prefix": "{{OUTPUT_PREFIX}}",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 19,
+      "save_metadata": true,
+      "trim_to_audio": false,
+      "pingpong": false,
+      "save_output": true,
+      "images": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "VHS_VideoCombine",
+    "_meta": {
+      "title": "合并为视频"
+    }
+  },
+  "64": {
+    "inputs": {
+      "text": "[\n    true,\n    [\n        \"/root/comfy/ComfyUI/output/batch_upscale_00001.png\",\n        \"/root/comfy/ComfyUI/output/batch_upscale_00001.mp4\"\n    ],\n    true,\n    [\n        \"/root/comfy/ComfyUI/output/batch_upscale_00002.png\",\n        \"/root/comfy/ComfyUI/output/batch_upscale_00002.mp4\"\n    ],\n    true,\n    [\n        \"/root/comfy/ComfyUI/output/batch_upscale_00003.png\",\n        \"/root/comfy/ComfyUI/output/batch_upscale_00003.mp4\"\n    ],\n    true,\n    [\n        \"/root/comfy/ComfyUI/output/batch_upscale_00004.png\",\n        \"/root/comfy/ComfyUI/output/batch_upscale_00004.mp4\"\n    ]\n]",
+      "anything": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "easy showAnything",
+    "_meta": {
+      "title": "展示任何"
+    }
+  }
+}
