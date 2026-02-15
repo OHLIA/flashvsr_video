@@ -1,27 +1,33 @@
 """
-ComfyUI FlashVSR 批量视频处理工具 - 智能超时版本
-修复了任务超时逻辑，支持批处理中的部分完成和恢复
+ComfyUI FlashVSR 批量处理器 v22
+功能：批处理视频超分，支持断点续传、智能重启、状态监控
+作者：智能视频处理助手
+版本：v22 (2024-01-15)
+主要改进：
+1. 简化超时逻辑：只保留批次超时，去除视频总超时
+2. 增强状态检查：增加重试机制，避免单次检查失败
+3. 任务提交间隔：避免队列冲击
+4. 详细状态追踪：区分运行队列和等待队列
+5. 批次时间追踪：记录每个批次处理时间用于智能判断
+6. 更稳健的任务提交和监控
 """
 
 import os
-import sys
 import json
 import time
-import random
-import string
 import logging
 import requests
-import subprocess
-import datetime
+import glob
 import shutil
-import gc
-import atexit
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any, Set
-from glob import glob
+import subprocess
+import random
+import string
+from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime
+import atexit
+import gc
 
-# 设置日志
+# 配置日志
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -85,12 +91,15 @@ def get_video_info(video_path: str) -> Dict[str, Any]:
     return video_info
 
 class ComfyUI_Client:
-    """ComfyUI API客户端 - 修复版"""
+    """ComfyUI API客户端 - 增强版"""
     
     def __init__(self, server_address: str = "http://127.0.0.1:8188"):
         self.server_address = server_address
         self.session = requests.Session()
         self.client_id = self.generate_client_id()
+        # 添加重试机制
+        self.max_retries = 3
+        self.retry_delay = 2
     
     def generate_client_id(self) -> str:
         """生成客户端ID"""
@@ -99,109 +108,160 @@ class ComfyUI_Client:
     
     def is_server_running(self) -> bool:
         """检查ComfyUI服务器是否运行"""
-        try:
-            response = self.session.get(f"{self.server_address}/system_stats", timeout=5)
-            return response.status_code == 200
-        except:
-            return False
+        for attempt in range(self.max_retries):
+            try:
+                response = self.session.get(f"{self.server_address}/system_stats", timeout=5)
+                if response.status_code == 200:
+                    return True
+            except requests.exceptions.ConnectionError:
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                    continue
+                return False
+            except:
+                return False
+        return False
     
-    def get_queue(self) -> List[Dict]:
-        """获取队列信息"""
-        try:
-            response = self.session.get(f"{self.server_address}/queue", timeout=10)
-            if response.status_code == 200:
-                queue_data = response.json()
-                # 合并运行中和等待中的队列
-                queue_running = queue_data.get('queue_running', [])
-                queue_pending = queue_data.get('queue_pending', [])
-                return queue_running + queue_pending
-        except Exception as e:
-            logger.debug(f"获取队列失败: {e}")
+    def get_queue(self, max_retries: int = 3) -> List[Dict]:
+        """获取队列信息（带重试）"""
+        for attempt in range(max_retries):
+            try:
+                response = self.session.get(f"{self.server_address}/queue", timeout=10)
+                if response.status_code == 200:
+                    queue_data = response.json()
+                    # 合并运行中和等待中的队列
+                    queue_running = queue_data.get('queue_running', [])
+                    queue_pending = queue_data.get('queue_pending', [])
+                    return queue_running + queue_pending
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.debug(f"获取队列失败，重试 {attempt+1}/{max_retries}: {e}")
+                    time.sleep(self.retry_delay)
+                else:
+                    logger.debug(f"获取队列最终失败: {e}")
         return []
     
     def is_queue_empty(self) -> bool:
         """检查队列是否为空"""
         return len(self.get_queue()) == 0
     
-    def get_history(self) -> Dict[str, Dict]:
-        """获取历史记录"""
+    def get_queue_load(self) -> Tuple[int, int]:
+        """获取队列负载（运行中数量，等待中数量）"""
         try:
-            response = self.session.get(f"{self.server_address}/history", timeout=10)
-            if response.status_code == 200:
-                history_data = response.json()
-                # 确保返回的是字典
-                if isinstance(history_data, dict):
-                    return history_data
-                elif isinstance(history_data, list):
-                    logger.warning(f"⚠️  /history返回了列表而不是字典: {history_data[:5] if len(history_data) > 5 else history_data}")
-                    return {}
+            queue_data = self.session.get(f"{self.server_address}/queue", timeout=10).json()
+            running = len(queue_data.get('queue_running', []))
+            pending = len(queue_data.get('queue_pending', []))
+            return running, pending
+        except:
+            return 0, 0
+    
+    def wait_for_queue_available(self, max_retries: int = 10, delay: int = 5) -> bool:
+        """等待队列可用（不繁忙）"""
+        for attempt in range(max_retries):
+            running, pending = self.get_queue_load()
+            total = running + pending
+            
+            if total < 2:  # 队列中任务少于2个时认为可用
+                logger.debug(f"✅ 队列可用: 运行中={running}, 等待中={pending}")
+                return True
+            
+            logger.info(f"⏳ 队列繁忙: 运行中={running}, 等待中={pending}, 等待中... ({attempt+1}/{max_retries})")
+            time.sleep(delay)
+        
+        logger.warning("⚠️  队列持续繁忙，将继续提交")
+        return False
+    
+    def get_history(self, max_retries: int = 3) -> Dict[str, Dict]:
+        """获取历史记录（带重试）"""
+        for attempt in range(max_retries):
+            try:
+                response = self.session.get(f"{self.server_address}/history", timeout=10)
+                if response.status_code == 200:
+                    history_data = response.json()
+                    if isinstance(history_data, dict):
+                        return history_data
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.debug(f"获取历史记录失败，重试 {attempt+1}/{max_retries}: {e}")
+                    time.sleep(self.retry_delay)
                 else:
-                    logger.warning(f"⚠️  /history返回了未知类型: {type(history_data)}")
-                    return {}
-        except Exception as e:
-            logger.debug(f"获取历史记录失败: {e}")
+                    logger.debug(f"获取历史记录最终失败: {e}")
         return {}
     
     def get_prompt_by_id(self, prompt_id: str) -> Optional[Dict]:
         """根据ID获取特定任务的详细信息"""
-        try:
-            history = self.get_history()
-            if prompt_id in history:
-                return history[prompt_id]
-        except Exception as e:
-            logger.debug(f"获取任务 {prompt_id} 详细信息失败: {e}")
+        for attempt in range(3):
+            try:
+                history = self.get_history()
+                if prompt_id in history:
+                    return history[prompt_id]
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(1)
+                    continue
         return None
     
-    def get_prompt_status(self, prompt_id: str) -> Optional[Dict]:
-        """获取任务状态"""
-        try:
-            # 1. 首先检查历史记录（已完成的任务）
-            prompt_info = self.get_prompt_by_id(prompt_id)
-            if prompt_info:
+    def get_prompt_status(self, prompt_id: str, max_retries: int = 3) -> Optional[Dict]:
+        """获取任务状态（带重试）"""
+        for attempt in range(max_retries):
+            try:
+                # 1. 检查历史记录（已完成的任务）
+                prompt_info = self.get_prompt_by_id(prompt_id)
+                if prompt_info:
+                    return {
+                        'status': {
+                            'completed': True,
+                            'error': False
+                        },
+                        'outputs': prompt_info.get('outputs', {}),
+                        'prompt_id': prompt_id
+                    }
+                
+                # 2. 检查队列（运行中/等待中的任务）
+                queue = self.get_queue()
+                for item in queue:
+                    if isinstance(item, dict) and item.get('prompt_id') == prompt_id:
+                        # 判断是在运行队列还是等待队列
+                        running_queue = self.session.get(f"{self.server_address}/queue", timeout=10).json().get('queue_running', [])
+                        is_running = any(r_item.get('prompt_id') == prompt_id for r_item in running_queue)
+                        
+                        return {
+                            'status': {
+                                'completed': False,
+                                'error': False,
+                                'running': is_running,
+                                'pending': not is_running
+                            },
+                            'outputs': {},
+                            'prompt_id': prompt_id
+                        }
+                
+                # 3. 如果不在历史和队列中，可能任务不存在或已失败
                 return {
                     'status': {
-                        'completed': True,
-                        'error': False
+                        'completed': False,
+                        'error': True,
+                        'error_message': '任务不在队列或历史中'
                     },
-                    'outputs': prompt_info.get('outputs', {}),
+                    'outputs': {},
                     'prompt_id': prompt_id
                 }
-            
-            # 2. 检查队列（运行中/等待中的任务）
-            queue = self.get_queue()
-            for item in queue:
-                if isinstance(item, dict) and item.get('prompt_id') == prompt_id:
+                
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.debug(f"获取任务状态失败，重试 {attempt+1}/{max_retries}: {e}")
+                    time.sleep(self.retry_delay)
+                else:
+                    logger.debug(f"获取任务状态最终失败: {e}")
                     return {
                         'status': {
                             'completed': False,
-                            'error': False
+                            'error': True,
+                            'error_message': f'获取状态异常: {str(e)}'
                         },
                         'outputs': {},
                         'prompt_id': prompt_id
                     }
-            
-            # 3. 如果不在历史和队列中，可能任务不存在或已失败
-            return {
-                'status': {
-                    'completed': False,
-                    'error': True,
-                    'error_message': '任务不在队列或历史中'
-                },
-                'outputs': {},
-                'prompt_id': prompt_id
-            }
-            
-        except Exception as e:
-            logger.error(f"获取任务状态失败: {e}")
-            return {
-                'status': {
-                    'completed': False,
-                    'error': True,
-                    'error_message': f'获取状态异常: {str(e)}'
-                },
-                'outputs': {},
-                'prompt_id': prompt_id
-            }
     
     def is_prompt_completed(self, prompt_id: str) -> bool:
         """检查任务是否完成"""
@@ -219,39 +279,54 @@ class ComfyUI_Client:
     
     def submit_prompt(self, workflow: Dict) -> Optional[str]:
         """提交任务到ComfyUI"""
-        try:
-            # 清除历史记录
-            self.clear_history()
-            
-            # 提交任务
-            response = self.session.post(
-                f"{self.server_address}/prompt",
-                json={"prompt": workflow, "client_id": self.client_id},
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                prompt_id = data.get('prompt_id')
-                if prompt_id:
-                    logger.info(f"✅ 任务提交成功，ID: {prompt_id[:8]}...")
-                    return prompt_id
-                else:
-                    logger.error(f"❌ 提交任务失败: 返回数据中无prompt_id")
-                    return None
-            else:
-                logger.error(f"❌ 提交任务失败: {response.status_code} - {response.text}")
-                return None
+        for attempt in range(self.max_retries):
+            try:
+                # 先等待队列可用
+                self.wait_for_queue_available()
                 
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"❌ 连接ComfyUI服务器失败: {e}")
-            return None
-        except requests.exceptions.Timeout as e:
-            logger.error(f"❌ 连接ComfyUI服务器超时: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"❌ 提交任务异常: {e}")
-            return None
+                # 清除历史记录
+                self.clear_history()
+                
+                # 提交任务
+                response = self.session.post(
+                    f"{self.server_address}/prompt",
+                    json={"prompt": workflow, "client_id": self.client_id},
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    prompt_id = data.get('prompt_id')
+                    if prompt_id:
+                        logger.info(f"✅ 任务提交成功，ID: {prompt_id[:8]}...")
+                        return prompt_id
+                    else:
+                        logger.error(f"❌ 提交任务失败: 返回数据中无prompt_id")
+                else:
+                    logger.error(f"❌ 提交任务失败: {response.status_code} - {response.text}")
+                    
+            except requests.exceptions.ConnectionError as e:
+                logger.error(f"❌ 连接ComfyUI服务器失败: {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay * 2)
+                    continue
+            except requests.exceptions.Timeout as e:
+                logger.error(f"❌ 连接ComfyUI服务器超时: {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay * 2)
+                    continue
+            except Exception as e:
+                logger.error(f"❌ 提交任务异常: {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                    continue
+            
+            # 所有异常都走到这里
+            if attempt < self.max_retries - 1:
+                logger.info(f"🔄 提交任务失败，{self.retry_delay}秒后重试...")
+                time.sleep(self.retry_delay)
+        
+        return None
     
     def clear_history(self) -> bool:
         """清除历史记录"""
@@ -283,6 +358,7 @@ class BatchProgressTracker:
     def __init__(self, output_dir: str = None):
         self.output_dir = output_dir or self.get_default_output_dir()
         self.batch_progress_file = "batch_progress.json"
+        self.batch_time_file = "batch_times.json"
     
     def get_default_output_dir(self) -> str:
         """获取默认输出目录"""
@@ -293,31 +369,6 @@ class BatchProgressTracker:
         default_output = os.path.join(os.getcwd(), "output")
         os.makedirs(default_output, exist_ok=True)
         return default_output
-    
-    def get_batch_output_pattern(self, video_path: str, workflow: Dict) -> List[str]:
-        """获取批次输出文件模式"""
-        # 从工作流中提取输出前缀
-        output_prefix = self.extract_output_prefix(workflow)
-        if not output_prefix:
-            output_prefix = "flashvsr_"
-        
-        base_name = os.path.splitext(os.path.basename(video_path))[0]
-        patterns = [
-            os.path.join(self.output_dir, f"{output_prefix}_{base_name}_%*"),  # 带百分比的模式
-            os.path.join(self.output_dir, f"{output_prefix}_{base_name}_*"),   # 不带百分比的模式
-            os.path.join(self.output_dir, f"ComfyUI_*.mov"),                    # 默认ComfyUI输出
-        ]
-        return patterns
-    
-    def extract_output_prefix(self, workflow: Dict) -> str:
-        """从工作流中提取输出前缀"""
-        for node_id, node_data in workflow.items():
-            if node_data.get("class_type") == "VHS_VideoCombine":
-                inputs = node_data.get("inputs", {})
-                filename_prefix = inputs.get("filename_prefix", "")
-                if filename_prefix:
-                    return str(filename_prefix)
-        return ""
     
     def get_existing_batches(self, video_path: str, workflow: Dict, total_batches: int) -> Tuple[List[str], Dict[str, Any]]:
         """获取已存在的批次文件和进度信息
@@ -330,11 +381,11 @@ class BatchProgressTracker:
         # 获取所有可能的输出文件
         for ext in ['.mov', '.mp4', '.avi', '.mkv', '.webm']:
             # 搜索批次文件
-            batch_files = glob(os.path.join(self.output_dir, f"*{base_name}*_*%*{ext}"))
+            batch_files = glob.glob(os.path.join(self.output_dir, f"*{base_name}*_*%*{ext}"))
             output_files.extend(batch_files)
             
             # 搜索没有百分比的批次文件
-            simple_files = glob(os.path.join(self.output_dir, f"*{base_name}*{ext}"))
+            simple_files = glob.glob(os.path.join(self.output_dir, f"*{base_name}*{ext}"))
             for f in simple_files:
                 if f not in output_files:
                     output_files.append(f)
@@ -343,10 +394,11 @@ class BatchProgressTracker:
         if output_files:
             logger.info(f"📁 已找到 {len(output_files)} 个批次文件:")
             for i, file_path in enumerate(output_files[:10]):
-                file_size = os.path.getsize(file_path)
+                file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
                 file_size_mb = file_size / (1024 * 1024)
                 batch_num = self.extract_batch_number(file_path)
-                logger.info(f"  {i+1}. {os.path.basename(file_path)} ({file_size_mb:.1f}MB)")
+                status = f"(批号: {batch_num})" if batch_num > 0 else ""
+                logger.info(f"  {i+1}. {os.path.basename(file_path)} ({file_size_mb:.1f}MB) {status}")
             
             # 分析批次进度
             completed_batches = len(output_files)
@@ -422,174 +474,163 @@ class BatchProgressTracker:
             logger.error(f"❌ 加载进度失败: {e}")
         return None
     
-    def delete_progress(self, video_path: str):
-        """删除处理进度"""
+    def save_batch_time(self, video_path: str, batch_num: int, process_time: float):
+        """保存批次处理时间"""
         try:
-            if os.path.exists(self.batch_progress_file):
-                with open(self.batch_progress_file, 'r', encoding='utf-8') as f:
-                    progress = json.load(f)
+            batch_times = {}
+            if os.path.exists(self.batch_time_file):
+                with open(self.batch_time_file, 'r', encoding='utf-8') as f:
+                    batch_times = json.load(f)
+            
+            video_key = os.path.basename(video_path)
+            if video_key not in batch_times:
+                batch_times[video_key] = {}
+            
+            batch_times[video_key][str(batch_num)] = process_time
+            
+            with open(self.batch_time_file, 'w', encoding='utf-8') as f:
+                json.dump(batch_times, f, ensure_ascii=False, indent=2)
+            
+            logger.debug(f"⏱️  保存批次 {batch_num} 处理时间: {process_time:.1f}秒")
+        except Exception as e:
+            logger.error(f"❌ 保存批次时间失败: {e}")
+    
+    def load_batch_times(self, video_path: str) -> Dict[int, float]:
+        """加载视频的批次处理时间"""
+        try:
+            if os.path.exists(self.batch_time_file):
+                with open(self.batch_time_file, 'r', encoding='utf-8') as f:
+                    batch_times = json.load(f)
                 
                 video_key = os.path.basename(video_path)
-                if video_key in progress:
-                    del progress[video_key]
-                    
-                    with open(self.batch_progress_file, 'w', encoding='utf-8') as f:
-                        json.dump(progress, f, ensure_ascii=False, indent=2)
-                    
-                    logger.debug(f"✅ 进度已删除: {video_key}")
+                if video_key in batch_times:
+                    return {int(k): v for k, v in batch_times[video_key].items()}
         except Exception as e:
-            logger.error(f"❌ 删除进度失败: {e}")
+            logger.error(f"❌ 加载批次时间失败: {e}")
+        return {}
+    
+    def get_average_batch_time(self, video_path: str) -> float:
+        """获取平均批次处理时间"""
+        batch_times = self.load_batch_times(video_path)
+        if not batch_times:
+            return 0.0
+        
+        times = list(batch_times.values())
+        return sum(times) / len(times) if times else 0.0
 
 class BatchTimeoutManager:
-    """批处理超时管理器 - 修复版"""
+    """批处理超时管理器 - 简化版"""
     
-    def __init__(self, timeout_per_batch: int = 300, timeout_per_video: int = 3600):
+    def __init__(self, timeout_per_batch: int = 300):
         """
         初始化超时管理器
         timeout_per_batch: 每个批次的最大处理时间（秒）
-        timeout_per_video: 整个视频的最大处理时间（秒）
         """
         self.timeout_per_batch = timeout_per_batch
-        self.timeout_per_video = timeout_per_video
-        self.video_timers = {}  # 跟踪每个视频的处理时间
-        self.batch_timers = {}  # 跟踪每个视频的最新批次开始时间
-        self.progress_tracker = BatchProgressTracker()
+        self.batch_timers = {}  # 跟踪每个批次的开始时间
+        self.batch_times = {}   # 记录每个批次的实际处理时间
+        self.timeout_counters = {}  # 超时计数器
     
-    def start_video_timer(self, video_path: str):
-        """开始视频计时器"""
-        video_key = os.path.basename(video_path)
-        self.video_timers[video_key] = {
-            'start_time': time.time(),
-            'last_batch_start': None,
-            'completed_batches': 0,
-            'timeout_count': 0
-        }
-        logger.debug(f"⏱️  开始视频计时器: {video_key}")
-    
-    def start_batch_timer(self, video_path: str, batch_num: int = None):
+    def start_batch_timer(self, video_path: str, batch_num: int):
         """开始批次计时器"""
         video_key = os.path.basename(video_path)
         
-        if video_key not in self.video_timers:
-            self.start_video_timer(video_path)
+        if video_key not in self.batch_timers:
+            self.batch_timers[video_key] = {}
+            self.batch_times[video_key] = {}
+            self.timeout_counters[video_key] = 0
         
-        self.video_timers[video_key]['last_batch_start'] = time.time()
-        
-        if batch_num is not None:
-            logger.debug(f"⏱️  开始批次 {batch_num} 计时器: {video_key}")
+        self.batch_timers[video_key][batch_num] = time.time()
+        logger.debug(f"⏱️  开始批次 {batch_num} 计时器: {video_key}")
     
-    def check_batch_timeout(self, video_path: str) -> bool:
-        """检查当前批次是否超时"""
+    def end_batch_timer(self, video_path: str, batch_num: int) -> float:
+        """结束批次计时器，返回处理时间"""
         video_key = os.path.basename(video_path)
         
-        if video_key not in self.video_timers:
-            return False
+        if (video_key in self.batch_timers and 
+            batch_num in self.batch_timers[video_key]):
+            
+            start_time = self.batch_timers[video_key][batch_num]
+            end_time = time.time()
+            process_time = end_time - start_time
+            
+            # 保存处理时间
+            self.batch_times[video_key][batch_num] = process_time
+            
+            # 删除计时器
+            del self.batch_timers[video_key][batch_num]
+            
+            logger.debug(f"⏱️  批次 {batch_num} 处理完成，耗时: {process_time:.1f}秒")
+            return process_time
         
-        last_batch_start = self.video_timers[video_key].get('last_batch_start')
-        if not last_batch_start:
-            return False
-        
-        elapsed = time.time() - last_batch_start
-        
-        # 如果批次处理时间超过阈值
-        if elapsed > self.timeout_per_batch:
-            logger.warning(f"⚠️  批次处理超时: 已运行 {elapsed:.0f} 秒，超过 {self.timeout_per_batch} 秒")
-            self.video_timers[video_key]['timeout_count'] += 1
-            return True
-        
-        return False
+        return 0.0
     
-    def check_video_timeout(self, video_path: str) -> bool:
-        """检查整个视频处理是否超时"""
-        video_key = os.path.basename(video_path)
-        
-        if video_key not in self.video_timers:
-            return False
-        
-        start_time = self.video_timers[video_key]['start_time']
-        elapsed = time.time() - start_time
-        
-        # 如果整个视频处理时间超过阈值
-        if elapsed > self.timeout_per_video:
-            logger.warning(f"⚠️  视频处理总时长超时: 已运行 {elapsed:.0f} 秒，超过 {self.timeout_per_video} 秒")
-            return True
-        
-        return False
-    
-    def should_restart(self, video_path: str) -> bool:
-        """判断是否需要重启
-        
-        重启条件：
-        1. 当前批次处理超时
-        2. 连续多个批次超时
-        3. 整个视频处理时间超时
+    def check_batch_timeout(self, video_path: str, batch_num: int) -> Tuple[bool, float]:
+        """检查当前批次是否超时
+        返回: (是否超时, 已运行时间)
         """
         video_key = os.path.basename(video_path)
         
-        if video_key not in self.video_timers:
-            return False
+        if (video_key not in self.batch_timers or 
+            batch_num not in self.batch_timers[video_key]):
+            return False, 0.0
         
-        # 检查批次超时
-        if self.check_batch_timeout(video_path):
-            timeout_count = self.video_timers[video_key].get('timeout_count', 0)
-            
-            # 如果是第一次超时，检查是否有进度
-            if timeout_count == 1:
-                # 获取当前进度
-                progress = self.progress_tracker.load_progress(video_path)
-                if progress and progress.get('progress', {}).get('completed_batches', 0) > 0:
-                    logger.info(f"🔍 批次超时，但已有进度，检查是否有新批次完成...")
-                    return False
-            
-            # 连续2次超时则重启
-            if timeout_count >= 2:
-                logger.warning(f"⚠️  连续 {timeout_count} 个批次超时，需要重启")
-                return True
+        start_time = self.batch_timers[video_key][batch_num]
+        elapsed = time.time() - start_time
         
-        # 检查视频总时长超时
-        if self.check_video_timeout(video_path):
-            return True
+        # 如果批次处理时间超过阈值
+        if elapsed > self.timeout_per_batch:
+            self.timeout_counters[video_key] = self.timeout_counters.get(video_key, 0) + 1
+            logger.warning(f"⚠️  批次 {batch_num} 处理超时: 已运行 {elapsed:.0f} 秒，超过 {self.timeout_per_batch} 秒")
+            return True, elapsed
         
-        return False
+        return False, elapsed
     
-    def update_progress(self, video_path: str, completed_batches: int, total_batches: int):
-        """更新处理进度"""
+    def get_expected_completion_time(self, video_path: str, current_batch: int, total_batches: int) -> float:
+        """根据历史数据预测完成时间"""
         video_key = os.path.basename(video_path)
         
-        if video_key in self.video_timers:
-            self.video_timers[video_key]['completed_batches'] = completed_batches
-            
-            # 重置批次计时器
-            self.start_batch_timer(video_path)
+        if video_key not in self.batch_times or not self.batch_times[video_key]:
+            return 0.0
+        
+        # 计算已处理批次的平均时间
+        completed_times = list(self.batch_times[video_key].values())
+        if not completed_times:
+            return 0.0
+        
+        avg_time = sum(completed_times) / len(completed_times)
+        
+        # 预测剩余时间
+        remaining_batches = total_batches - current_batch
+        return avg_time * remaining_batches
+    
+    def get_average_batch_time(self, video_path: str) -> float:
+        """获取平均批次处理时间"""
+        video_key = os.path.basename(video_path)
+        
+        if video_key in self.batch_times and self.batch_times[video_key]:
+            times = list(self.batch_times[video_key].values())
+            return sum(times) / len(times)
+        
+        return 0.0
     
     def reset_video_timer(self, video_path: str):
         """重置视频计时器"""
         video_key = os.path.basename(video_path)
-        if video_key in self.video_timers:
-            self.video_timers[video_key]['timeout_count'] = 0
-            self.video_timers[video_key]['last_batch_start'] = time.time()
+        if video_key in self.timeout_counters:
+            self.timeout_counters[video_key] = 0
             logger.debug(f"🔄 重置视频计时器: {video_key}")
-    
-    def get_elapsed_time(self, video_path: str) -> float:
-        """获取已处理时间"""
-        video_key = os.path.basename(video_path)
-        
-        if video_key in self.video_timers:
-            start_time = self.video_timers[video_key]['start_time']
-            return time.time() - start_time
-        
-        return 0.0
 
 class ComfyUI_FlashVSR_BatchProcessor:
     def __init__(self, 
                  comfyui_url: str = "http://127.0.0.1:8188", 
                  timeout_per_batch: int = 300,  # 每个批次超时时间
-                 timeout_per_video: int = 3600,  # 整个视频超时时间
                  max_retries: int = 3,
                  restart_delay: int = 5,
-                 startup_timeout: int = 300):
+                 startup_timeout: int = 300,
+                 min_submit_interval: int = 2):  # 最小提交间隔
         """
-        初始化批量处理器 - 智能超时版本
+        初始化批量处理器 - 智能简化版
         """
         # API客户端
         self.client = ComfyUI_Client(comfyui_url)
@@ -599,33 +640,33 @@ class ComfyUI_FlashVSR_BatchProcessor:
         
         # 超时管理器
         self.timeout_manager = BatchTimeoutManager(
-            timeout_per_batch=timeout_per_batch,
-            timeout_per_video=timeout_per_video
+            timeout_per_batch=timeout_per_batch
         )
         
         # 配置参数
         self.comfyui_url = comfyui_url
         self.timeout_per_batch = timeout_per_batch
-        self.timeout_per_video = timeout_per_video
         self.max_retries = max_retries
         self.restart_delay = restart_delay
         self.startup_timeout = startup_timeout
+        self.min_submit_interval = min_submit_interval
         
         # 状态跟踪
         self.processed_files = {}
         self.failed_files = {}
         self.restart_history = []
         self.current_retry_count = 0
+        self.last_submit_time = 0
         
         # 注册清理函数
         atexit.register(self.cleanup)
         
         logger.info("=" * 60)
-        logger.info("ComfyUI FlashVSR 批量处理器 - 智能超时版本")
+        logger.info("ComfyUI FlashVSR 批量处理器 v22 - 智能简化版")
         logger.info(f"ComfyUI地址: {comfyui_url}")
         logger.info(f"批次超时: {timeout_per_batch}秒")
-        logger.info(f"视频超时: {timeout_per_video}秒")
         logger.info(f"最大重试次数: {max_retries}次")
+        logger.info(f"提交间隔: {min_submit_interval}秒")
         logger.info(f"输出目录: {self.progress_tracker.output_dir}")
         logger.info("=" * 60)
     
@@ -681,7 +722,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
         tile_size: int = 256,
         tile_overlap: int = 24,
         total_frames: Optional[int] = None,
-        frames_per_batch: int = 201,
+        frames_per_batch: int = 125,
         gpu_device: str = "auto"
     ) -> Dict:
         """更新工作流参数"""
@@ -761,22 +802,28 @@ class ComfyUI_FlashVSR_BatchProcessor:
         智能等待任务完成
         返回: (是否成功, 状态信息, 输出文件列表, 进度信息)
         """
-        logger.info(f"⏳ 等待任务完成 (批次超时: {self.timeout_per_batch}秒, 视频总超时: {self.timeout_per_video}秒)...")
+        logger.info(f"⏳ 等待任务完成 (批次超时: {self.timeout_per_batch}秒)...")
         
         video_name = os.path.basename(video_path)
         start_time = time.time()
         last_status_check = 0
         status_check_interval = 5
-        last_progress_check = 0
-        progress_check_interval = 10
         last_output_check = 0
-        output_check_interval = 15
+        output_check_interval = 10
         queue_empty_count = 0
         max_queue_empty = 3
         output_files_found = []
         last_output_count = 0
         no_progress_count = 0
         max_no_progress = 3
+        last_queue_length = 0
+        consecutive_same_queue = 0
+        max_consecutive_same_queue = 6  # 30秒内队列无变化
+        
+        # 获取历史批次处理时间
+        historical_batch_time = self.progress_tracker.get_average_batch_time(video_path)
+        if historical_batch_time > 0:
+            logger.info(f"⏱️  历史平均批次处理时间: {historical_batch_time:.1f}秒")
         
         # 计算预期批次数
         expected_batches = total_batches
@@ -785,27 +832,12 @@ class ComfyUI_FlashVSR_BatchProcessor:
             current_time = time.time()
             elapsed = current_time - start_time
             
-            # 1. 检查视频总超时
-            if elapsed > self.timeout_per_video:
-                logger.warning(f"⚠️  视频 {video_name} 处理总时长超时: {elapsed:.0f}秒")
-                
-                # 检查是否有输出文件
-                output_files, progress_info = self.progress_tracker.get_existing_batches(
-                    video_path, workflow, expected_batches
-                )
-                
-                if output_files:
-                    completed = len(output_files)
-                    logger.info(f"📊 已处理 {completed}/{expected_batches} 个批次")
-                    
-                    if completed > 0:
-                        return True, f"视频总时长超时但有部分完成({completed}/{expected_batches})", output_files, progress_info
-                
-                return False, f"视频总时长超时({elapsed:.0f}秒)", [], {}
+            # 1. 检查当前批次超时
+            current_batch = last_output_count + 1
+            is_timeout, batch_elapsed = self.timeout_manager.check_batch_timeout(video_path, current_batch)
             
-            # 2. 检查批次超时
-            if self.timeout_manager.check_batch_timeout(video_path):
-                logger.warning(f"⚠️  批次处理超时: {video_name}")
+            if is_timeout:
+                logger.warning(f"⚠️  批次 {current_batch} 处理超时: {video_name} (已运行 {batch_elapsed:.0f}秒)")
                 
                 # 检查是否有输出进度
                 output_files, progress_info = self.progress_tracker.get_existing_batches(
@@ -818,10 +850,16 @@ class ComfyUI_FlashVSR_BatchProcessor:
                     last_output_count = completed
                     no_progress_count = 0
                     logger.info(f"📈 检测到新批次完成: {completed}/{expected_batches}")
-                    self.timeout_manager.reset_video_timer(video_path)
+                    
+                    # 记录批次处理时间
+                    if current_batch > 1:
+                        batch_time = batch_elapsed
+                        self.timeout_manager.end_batch_timer(video_path, current_batch - 1)
+                        self.progress_tracker.save_batch_time(video_path, current_batch - 1, batch_time)
+                        logger.info(f"⏱️  批次 {current_batch-1} 处理时间: {batch_time:.1f}秒")
                 else:
                     no_progress_count += 1
-                    logger.warning(f"⚠️  批次无进展: {no_progress_count}/{max_no_progress}")
+                    logger.warning(f"⚠️  批次 {current_batch} 无进展: {no_progress_count}/{max_no_progress}")
                     
                     if no_progress_count >= max_no_progress:
                         logger.warning(f"⚠️  连续 {max_no_progress} 个批次无进展，需要重启")
@@ -831,7 +869,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
                         else:
                             return False, f"连续批次无进展", [], {}
             
-            # 3. 定期检查输出文件
+            # 2. 定期检查输出文件
             if current_time - last_output_check >= output_check_interval:
                 output_files, progress_info = self.progress_tracker.get_existing_batches(
                     video_path, workflow, expected_batches
@@ -844,26 +882,28 @@ class ComfyUI_FlashVSR_BatchProcessor:
                     # 更新进度
                     if completed > last_output_count:
                         logger.info(f"📈 进度更新: {completed}/{expected_batches} ({completed/expected_batches*100:.1f}%)")
+                        
+                        # 记录完成的批次处理时间
+                        for batch_num in range(last_output_count + 1, completed + 1):
+                            if batch_num > 1:  # 第一个批次从任务开始计算
+                                batch_time = self.timeout_manager.end_batch_timer(video_path, batch_num - 1)
+                                if batch_time > 0:
+                                    self.progress_tracker.save_batch_time(video_path, batch_num - 1, batch_time)
+                                    logger.debug(f"⏱️  记录批次 {batch_num-1} 处理时间: {batch_time:.1f}秒")
+                        
+                        # 开始下一个批次的计时
+                        if completed < expected_batches:
+                            self.timeout_manager.start_batch_timer(video_path, completed + 1)
+                        
                         last_output_count = completed
                         no_progress_count = 0
-                        
-                        # 更新超时管理器
-                        self.timeout_manager.update_progress(video_path, completed, expected_batches)
-                        
-                        # 保存进度
-                        self.progress_tracker.save_progress(video_path, {
-                            'completed_batches': completed,
-                            'total_batches': expected_batches,
-                            'output_files': [os.path.basename(f) for f in output_files],
-                            'last_update': datetime.now().isoformat()
-                        })
                     
                     # 检查是否完成所有批次
                     if completed >= expected_batches:
                         logger.info(f"✅ 所有批次完成: {completed}/{expected_batches}")
                         return True, f"所有批次完成", output_files, progress_info
             
-            # 4. 定期检查任务状态
+            # 3. 定期检查任务状态
             if current_time - last_status_check >= status_check_interval:
                 try:
                     prompt_info = self.client.get_prompt_status(prompt_id)
@@ -916,59 +956,70 @@ class ComfyUI_FlashVSR_BatchProcessor:
                                 return True, f"任务出错但有输出({completed}/{expected_batches})", output_files, progress_info
                             
                             return False, f"任务出错: {error_msg}", [], {}
-                
-                except Exception as e:
-                    logger.warning(f"⚠️  检查任务状态时出错: {e}")
-            
-            # 5. 检查队列状态
-            if current_time - last_progress_check >= progress_check_interval:
-                try:
-                    queue = self.client.get_queue()
-                    queue_length = len(queue)
-                    last_progress_check = current_time
-                    
-                    if queue_length == 0:
-                        queue_empty_count += 1
                         
-                        if queue_empty_count >= max_queue_empty:
-                            logger.info(f"🔍 队列连续 {max_queue_empty} 次为空")
-                            
-                            # 检查输出文件
-                            output_files, progress_info = self.progress_tracker.get_existing_batches(
-                                video_path, workflow, expected_batches
-                            )
-                            
-                            if output_files:
-                                completed = len(output_files)
-                                logger.info(f"📊 队列为空，已有 {completed}/{expected_batches} 个批次完成")
-                                
-                                if completed >= expected_batches * 0.9:  # 90%完成
-                                    logger.info(f"✅ 队列为空且大部分批次已完成({completed}/{expected_batches})")
-                                    return True, f"队列为空但完成{completed}/{expected_batches}", output_files, progress_info
-                            
-                            logger.warning(f"⚠️  队列持续为空但无输出文件")
-                            queue_empty_count = 0
-                    else:
-                        queue_empty_count = 0
-                        # 显示队列信息
-                        if elapsed % 30 == 0:  # 每30秒显示一次
-                            logger.info(f"⏳ 已运行 {int(elapsed)} 秒，队列: {queue_length} 个任务")
+                        # 显示详细状态
+                        if status.get('running', False):
+                            logger.debug(f"⏳ 任务状态: 运行中")
+                        elif status.get('pending', False):
+                            logger.debug(f"⏳ 任务状态: 等待中")
                 
                 except Exception as e:
-                    logger.warning(f"⚠️  检查队列时出错: {e}")
+                    logger.debug(f"⚠️  检查任务状态时出错: {e}")
             
-            # 6. 显示进度
-            if elapsed % 30 == 0:  # 每30秒显示一次进度
-                elapsed_mins = int(elapsed // 60)
-                elapsed_secs = int(elapsed % 60)
+            # 4. 检查队列状态
+            try:
+                running, pending = self.client.get_queue_load()
+                queue_length = running + pending
                 
-                # 获取当前输出文件
-                output_files, _ = self.progress_tracker.get_existing_batches(
-                    video_path, workflow, expected_batches
-                )
-                completed = len(output_files)
-                
-                logger.info(f"⏳ 已处理 {elapsed_mins:02d}:{elapsed_secs:02d}，进度: {completed}/{expected_batches} ({completed/expected_batches*100:.1f}%)")
+                if queue_length == 0:
+                    queue_empty_count += 1
+                    
+                    if queue_empty_count >= max_queue_empty:
+                        logger.info(f"🔍 队列连续 {max_queue_empty} 次为空")
+                        
+                        # 检查输出文件
+                        output_files, progress_info = self.progress_tracker.get_existing_batches(
+                            video_path, workflow, expected_batches
+                        )
+                        
+                        if output_files:
+                            completed = len(output_files)
+                            logger.info(f"📊 队列为空，已有 {completed}/{expected_batches} 个批次完成")
+                            
+                            if completed >= expected_batches * 0.9:  # 90%完成
+                                logger.info(f"✅ 队列为空且大部分批次已完成({completed}/{expected_batches})")
+                                return True, f"队列为空但完成{completed}/{expected_batches}", output_files, progress_info
+                        
+                        logger.warning(f"⚠️  队列持续为空但无输出文件")
+                        queue_empty_count = 0
+                else:
+                    queue_empty_count = 0
+                    
+                    # 检查队列是否停滞
+                    if queue_length == last_queue_length:
+                        consecutive_same_queue += 1
+                        if consecutive_same_queue >= max_consecutive_same_queue:
+                            logger.warning(f"⚠️  队列状态连续 {max_consecutive_same_queue} 次无变化，可能停滞")
+                            consecutive_same_queue = 0
+                    else:
+                        consecutive_same_queue = 0
+                        last_queue_length = queue_length
+                    
+                    # 每30秒显示一次队列状态
+                    if elapsed % 30 == 0:
+                        avg_batch_time = self.timeout_manager.get_average_batch_time(video_path)
+                        if avg_batch_time > 0 and last_output_count > 0:
+                            remaining_batches = expected_batches - last_output_count
+                            estimated_time = avg_batch_time * remaining_batches
+                            hours = int(estimated_time // 3600)
+                            minutes = int((estimated_time % 3600) // 60)
+                            logger.info(f"⏳ 已处理 {int(elapsed)} 秒，队列: 运行中={running}, 等待中={pending}")
+                            logger.info(f"  进度: {last_output_count}/{expected_batches}，预计剩余: {hours}时{minutes}分")
+                        else:
+                            logger.info(f"⏳ 已处理 {int(elapsed)} 秒，队列: 运行中={running}, 等待中={pending}")
+            
+            except Exception as e:
+                logger.debug(f"⚠️  检查队列时出错: {e}")
             
             time.sleep(2)
     
@@ -1092,6 +1143,18 @@ class ComfyUI_FlashVSR_BatchProcessor:
         
         return killed_pids
     
+    def wait_for_submit_interval(self):
+        """等待提交间隔"""
+        current_time = time.time()
+        time_since_last = current_time - self.last_submit_time
+        
+        if time_since_last < self.min_submit_interval:
+            wait_time = self.min_submit_interval - time_since_last
+            logger.debug(f"⏳ 等待提交间隔: {wait_time:.1f}秒")
+            time.sleep(wait_time)
+        
+        self.last_submit_time = time.time()
+    
     def process_single_video(
         self,
         workflow_template: Dict,
@@ -1100,10 +1163,10 @@ class ComfyUI_FlashVSR_BatchProcessor:
         scale: float = 4.0,
         tile_size: int = 256,
         tile_overlap: int = 24,
-        frames_per_batch: int = 201,
+        frames_per_batch: int = 125,
         gpu_device: str = "auto"
     ) -> Tuple[bool, str, int, List[str]]:
-        """处理单个视频 - 智能超时版本"""
+        """处理单个视频 - 简化版"""
         video_name = os.path.basename(video_path)
         retry_count = 0
         success = False
@@ -1151,14 +1214,20 @@ class ComfyUI_FlashVSR_BatchProcessor:
                 logger.info(f"✅ 视频 '{video_name}' 已有 {completed_batches}/{total_batches} 完成，跳过处理")
                 return True, f"大部分已处理({completed_batches}/{total_batches})", 0, existing_files
         
-        # 开始处理
-        self.timeout_manager.start_video_timer(video_path)
+        # 获取历史批次处理时间
+        historical_times = self.progress_tracker.load_batch_times(video_path)
+        if historical_times:
+            avg_time = sum(historical_times.values()) / len(historical_times)
+            logger.info(f"⏱️  历史批次处理时间: 平均 {avg_time:.1f}秒/批次")
         
         while retry_count < self.max_retries and not success:
             retry_count += 1
             logger.info(f"🔄 尝试 {retry_count}/{self.max_retries}")
             
             try:
+                # 等待提交间隔
+                self.wait_for_submit_interval()
+                
                 # 清除历史记录
                 logger.debug("清除ComfyUI历史记录...")
                 self.client.clear_history()
@@ -1177,7 +1246,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
                 )
                 
                 # 提交任务
-                logger.info(f"✅ 任务已提交: {video_name}")
+                logger.info(f"📤 提交任务: {video_name}")
                 prompt_id = self.client.submit_prompt(workflow)
                 
                 if not prompt_id:
@@ -1188,7 +1257,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
                 
                 logger.info(f"   任务ID: {prompt_id}")
                 
-                # 开始批次计时
+                # 开始第一个批次的计时
                 self.timeout_manager.start_batch_timer(video_path, completed_batches + 1)
                 
                 # 智能等待任务完成
@@ -1246,27 +1315,22 @@ class ComfyUI_FlashVSR_BatchProcessor:
                         completed = len(partial_files)
                         logger.info(f"📊 找到 {completed}/{total_batches} 个部分输出文件")
                         
-                        # 判断是否需要重启
-                        if completed > 0 and self.timeout_manager.should_restart(video_path):
-                            logger.warning(f"⚠️  需要重启，当前完成 {completed}/{total_batches}")
+                        # 如果有部分输出，记录进度
+                        if completed > 0:
+                            self.progress_tracker.save_progress(video_path, {
+                                'completed_batches': completed,
+                                'total_batches': total_batches,
+                                'output_files': [os.path.basename(f) for f in partial_files],
+                                'status': 'partial_complete',
+                                'last_update': datetime.now().isoformat()
+                            })
                             
-                            if completed >= total_batches * 0.5:  # 50%完成
-                                logger.info(f"✅ 超过50%完成，保存进度后重启")
-                                self.progress_tracker.save_progress(video_path, {
-                                    'completed_batches': completed,
-                                    'total_batches': total_batches,
-                                    'output_files': [os.path.basename(f) for f in partial_files],
-                                    'status': 'partial_complete',
-                                    'last_update': datetime.now().isoformat()
-                                })
-                            
-                            # 执行重启
-                            restart_success = self.restart_comfyui(f"批次处理超时: {status_msg}")
-                            
-                            if restart_success:
-                                logger.info("🔄 重启后继续处理...")
-                                time.sleep(self.restart_delay)
-                                continue
+                            # 记录批次处理时间
+                            for batch_num in range(1, completed + 1):
+                                if batch_num in self.timeout_manager.batch_timers.get(video_name, {}):
+                                    batch_time = self.timeout_manager.end_batch_timer(video_path, batch_num)
+                                    if batch_time > 0:
+                                        self.progress_tracker.save_batch_time(video_path, batch_num, batch_time)
                     
                     # 记录重启
                     self.record_restart(
@@ -1277,7 +1341,16 @@ class ComfyUI_FlashVSR_BatchProcessor:
                     
                     if retry_count < self.max_retries:
                         logger.info(f"🔄 准备重试 ({retry_count}/{self.max_retries})...")
-                        time.sleep(self.restart_delay)
+                        
+                        # 重启ComfyUI
+                        restart_success = self.restart_comfyui(f"批次处理超时: {status_msg}")
+                        
+                        if restart_success:
+                            time.sleep(self.restart_delay)
+                            continue
+                        else:
+                            logger.error("❌ 重启ComfyUI失败")
+                            break
                     else:
                         logger.error(f"❌ 达到最大重试次数")
                     
@@ -1303,7 +1376,13 @@ class ComfyUI_FlashVSR_BatchProcessor:
                 
                 if retry_count < self.max_retries:
                     logger.info(f"🔄 异常后准备重试 ({retry_count}/{self.max_retries})...")
-                    time.sleep(self.restart_delay)
+                    
+                    # 重启ComfyUI
+                    restart_success = self.restart_comfyui(f"处理异常: {str(e)}")
+                    
+                    if restart_success:
+                        time.sleep(self.restart_delay)
+                        continue
                 else:
                     logger.error("❌ 达到最大重试次数")
         
@@ -1375,7 +1454,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
         scale: float = 4.0,
         tile_size: int = 256,
         tile_overlap: int = 24,
-        frames_per_batch: int = 201,
+        frames_per_batch: int = 125,
         gpu_device: str = "auto",
         move_to_done: bool = True,
         cleanup_after_each: bool = True
@@ -1386,7 +1465,6 @@ class ComfyUI_FlashVSR_BatchProcessor:
         logger.info(f"⚙️  参数: scale={scale}, tile_size={tile_size}, tile_overlap={tile_overlap}")
         logger.info(f"🎮 GPU设备: {gpu_device}")
         logger.info(f"⏱️  批次超时: {self.timeout_per_batch}秒")
-        logger.info(f"⏱️  视频总超时: {self.timeout_per_video}秒")
         logger.info(f"🔄 最大重试: {self.max_retries}次")
         logger.info(f"📁 输出目录: {self.progress_tracker.output_dir}")
         logger.info(f"{'='*60}")
@@ -1423,6 +1501,15 @@ class ComfyUI_FlashVSR_BatchProcessor:
                 continue
             
             logger.info(f"\n📊 [{i}/{len(video_files)}] 处理: {video_name}")
+            logger.info("-" * 40)
+            
+            # 显示视频信息
+            video_info = get_video_info(video_path)
+            logger.info(f"📊 视频信息: {video_name}")
+            logger.info(f"   总帧数: {video_info['total_frames']}")
+            logger.info(f"   帧率: {video_info['fps']:.3f} fps")
+            logger.info(f"   时长: {video_info['duration']:.1f} 秒")
+            logger.info(f"   分辨率: {video_info['resolution']}")
             
             # 设置输出前缀
             output_prefix = None
@@ -1534,7 +1621,7 @@ def collect_video_files(input_path: str, pattern: str = '*.mp4') -> List[str]:
         
         for ext in video_extensions:
             search_pattern = os.path.join(input_path, f"*{ext}")
-            found_files = glob(search_pattern)
+            found_files = glob.glob(search_pattern)
             video_files.extend(found_files)
         
         # 去重并排序
@@ -1554,24 +1641,27 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description='ComfyUI FlashVSR 批量视频处理工具 - 智能超时版本',
+        description='ComfyUI FlashVSR 批量视频处理工具 v22 - 智能简化版',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
   # 处理目录下的所有视频
-  python batch_processor_smart_timeout.py --input ./videos --batch-timeout 300 --video-timeout 3600
+  python batch_processor_v22.py --input ./videos --batch-timeout 300
   
   # 自定义批次大小
-  python batch_processor_smart_timeout.py --input ./videos --frames-per-batch 125
+  python batch_processor_v22.py --input ./videos --frames-per-batch 125
   
   # 指定GPU设备
-  python batch_processor_smart_timeout.py --input ./videos --gpu 0
+  python batch_processor_v22.py --input ./videos --gpu 0
 
-主要改进:
-  1. 智能超时: 基于批次而非整个视频的超时判断
-  2. 进度跟踪: 实时跟踪每个批次的完成情况
-  3. 断点续传: 重启后从已有进度继续处理
-  4. 部分完成: 即使未完成所有批次，也能保存已处理的部分
+主要改进(v22):
+  1. 简化超时逻辑: 只保留批次超时，去除视频总超时
+  2. 批次时间追踪: 记录每个批次的实际处理时间用于智能判断
+  3. 增强状态检查: 增加重试机制，避免单次检查失败
+  4. 任务提交间隔: 避免短时间大量任务冲击队列
+  5. 监控队列负载: 在提交前检查队列状态
+  6. 详细状态追踪: 区分运行队列和等待队列
+  7. 预测完成时间: 基于历史批次处理时间预测剩余时间
         """
     )
     
@@ -1598,12 +1688,12 @@ def main():
     # 超时参数
     parser.add_argument('--batch-timeout', type=int, default=300,
                        help='每个批次的最大处理时间（秒）(默认: 300)')
-    parser.add_argument('--video-timeout', type=int, default=3600,
-                       help='整个视频的最大处理时间（秒）(默认: 3600)')
     parser.add_argument('--max-retries', type=int, default=3,
                        help='最大重试次数 (默认: 3)')
     parser.add_argument('--restart-delay', type=int, default=5,
                        help='重启后等待时间（秒）(默认: 5)')
+    parser.add_argument('--submit-interval', type=int, default=2,
+                       help='任务提交最小间隔（秒）(默认: 2)')
     
     # 文件管理
     parser.add_argument('--no-move', action='store_true',
@@ -1630,40 +1720,36 @@ def main():
         return
     
     # 显示文件列表
-    logger.info(f"\n📁 找到 {len(video_files)} 个视频文件:")
-    for i, vf in enumerate(video_files[:5], 1):
-        logger.info(f"  {i}. {os.path.basename(vf)}")
-    if len(video_files) > 5:
-        logger.info(f"  ... 还有 {len(video_files)-5} 个文件")
+    logger.info(f"📁 发现 {len(video_files)} 个视频文件:")
+    for i, video_path in enumerate(video_files[:10]):  # 只显示前10个
+        file_size = os.path.getsize(video_path) if os.path.exists(video_path) else 0
+        file_size_mb = file_size / (1024 * 1024)
+        logger.info(f"  {i+1}. {os.path.basename(video_path)} ({file_size_mb:.1f}MB)")
     
-    # 显示处理参数
-    logger.info(f"\n⚙️  处理参数:")
-    logger.info(f"  scale: {args.scale}")
-    logger.info(f"  tile_size: {args.tile_size}")
-    logger.info(f"  tile_overlap: {args.tile_overlap}")
-    logger.info(f"  frames_per_batch: {args.frames_per_batch}")
-    logger.info(f"  GPU: {args.gpu}")
-    logger.info(f"  批次超时: {args.batch_timeout}秒")
-    logger.info(f"  视频总超时: {args.video_timeout}秒")
-    logger.info(f"  最大重试: {args.max_retries}次")
+    if len(video_files) > 10:
+        logger.info(f"  ... 还有 {len(video_files)-10} 个文件")
     
-    # 初始化处理器
+    # 确认处理
+    user_input = input(f"\n确认处理 {len(video_files)} 个视频文件? (y/n): ").strip().lower()
+    if user_input not in ['y', 'yes', '是']:
+        logger.info("🚫 用户取消处理")
+        return
+    
+    # 创建批处理器实例
     processor = ComfyUI_FlashVSR_BatchProcessor(
         comfyui_url=args.server,
         timeout_per_batch=args.batch_timeout,
-        timeout_per_video=args.video_timeout,
         max_retries=args.max_retries,
-        restart_delay=args.restart_delay
+        restart_delay=args.restart_delay,
+        min_submit_interval=args.submit_interval
     )
     
-    # 批量处理
-    start_time = time.time()
-    
     try:
+        # 开始批量处理
         results = processor.batch_process(
             workflow_template_path=args.template,
             video_files=video_files,
-            output_prefix_base=None,
+            output_prefix_base=f"flashvsr_scale{args.scale}_tile{args.tile_size}",
             scale=args.scale,
             tile_size=args.tile_size,
             tile_overlap=args.tile_overlap,
@@ -1673,20 +1759,100 @@ def main():
             cleanup_after_each=not args.no_cleanup
         )
         
-        # 计算总耗时
-        total_time = time.time() - start_time
-        hours, remainder = divmod(total_time, 3600)
-        minutes, seconds = divmod(remainder, 60)
+        # 输出详细统计
+        logger.info(f"\n{'='*60}")
+        logger.info("处理统计详情")
+        logger.info(f"{'='*60}")
         
-        logger.info(f"\n⏱️  总耗时: {int(hours)}时{int(minutes)}分{seconds:.0f}秒")
+        success_count = 0
+        fail_count = 0
+        total_retries = 0
+        
+        for video_path, (success, status, retries, files) in results.items():
+            if success:
+                success_count += 1
+                total_retries += retries
+                logger.info(f"✅ {os.path.basename(video_path)}: 成功 (重试: {retries})")
+                logger.info(f"   状态: {status}")
+                if files:
+                    logger.info(f"   输出文件: {len(files)} 个")
+            else:
+                fail_count += 1
+                total_retries += retries
+                logger.info(f"❌ {os.path.basename(video_path)}: 失败 (重试: {retries})")
+                logger.info(f"   状态: {status}")
+        
+        logger.info(f"\n📊 最终统计:")
+        logger.info(f"   ✅ 成功: {success_count}/{len(video_files)} ({success_count/len(video_files)*100:.1f}%)")
+        logger.info(f"   ❌ 失败: {fail_count}/{len(video_files)} ({fail_count/len(video_files)*100:.1f}%)")
+        
+        if success_count > 0:
+            avg_retries = total_retries / success_count if success_count > 0 else 0
+            logger.info(f"   🔄 平均重试次数: {avg_retries:.1f}")
+        
+        # 重启历史
+        if processor.restart_history:
+            logger.info(f"\n🔄 重启历史 ({len(processor.restart_history)} 次):")
+            for i, restart in enumerate(processor.restart_history[-5:]):  # 显示最近5次
+                logger.info(f"   {i+1}. {restart['timestamp'][11:19]} - {restart.get('video_name', '系统')}: {restart['reason']}")
+        
+        # 生成处理报告
+        report_path = f"batch_processing_report_{time.strftime('%Y%m%d_%H%M%S')}.txt"
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write("=" * 60 + "\n")
+            f.write("ComfyUI FlashVSR 批量处理报告\n")
+            f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("=" * 60 + "\n\n")
+            
+            f.write("📊 处理统计:\n")
+            f.write(f"  总文件数: {len(video_files)}\n")
+            f.write(f"  成功文件: {success_count}\n")
+            f.write(f"  失败文件: {fail_count}\n")
+            f.write(f"  成功率: {success_count/len(video_files)*100:.1f}%\n\n")
+            
+            f.write("📁 文件详情:\n")
+            for video_path, (success, status, retries, files) in results.items():
+                f.write(f"\n📂 {os.path.basename(video_path)}:\n")
+                f.write(f"   状态: {'✅ 成功' if success else '❌ 失败'}\n")
+                f.write(f"   重试次数: {retries}\n")
+                f.write(f"   状态信息: {status}\n")
+                if files:
+                    f.write(f"   输出文件 ({len(files)} 个):\n")
+                    for file_path in files:
+                        if os.path.exists(file_path):
+                            file_size = os.path.getsize(file_path) / (1024 * 1024)
+                            f.write(f"     - {os.path.basename(file_path)} ({file_size:.1f}MB)\n")
+                        else:
+                            f.write(f"     - {os.path.basename(file_path)} (文件不存在)\n")
+            
+            f.write("\n" + "=" * 60 + "\n")
+            f.write("重启历史:\n")
+            for i, restart in enumerate(processor.restart_history):
+                f.write(f"\n{i+1}. 时间: {restart['timestamp']}\n")
+                f.write(f"   视频: {restart.get('video_name', '系统重启')}\n")
+                f.write(f"   原因: {restart['reason']}\n")
+                f.write(f"   尝试: {restart['attempt']}次\n")
+            
+            f.write("\n" + "=" * 60 + "\n")
+            f.write("处理参数:\n")
+            f.write(f"   工作流模板: {args.template}\n")
+            f.write(f"   放大倍数: {args.scale}\n")
+            f.write(f"   分块大小: {args.tile_size}\n")
+            f.write(f"   分块重叠: {args.tile_overlap}\n")
+            f.write(f"   每批帧数: {args.frames_per_batch}\n")
+            f.write(f"   GPU设备: {args.gpu}\n")
+            f.write(f"   批次超时: {args.batch_timeout}秒\n")
+            f.write(f"   最大重试: {args.max_retries}次\n")
+            f.write(f"   ComfyUI地址: {args.server}\n")
+        
+        logger.info(f"\n📄 详细报告已保存: {report_path}")
         
     except KeyboardInterrupt:
         logger.info("\n🛑 用户中断处理")
-        logger.info("已保存当前进度")
     except Exception as e:
-        logger.error(f"\n❌ 处理过程中发生错误: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"\n❌ 批量处理异常: {e}", exc_info=True)
+    finally:
+        processor.cleanup()
 
 if __name__ == "__main__":
     main()
