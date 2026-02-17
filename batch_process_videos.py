@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ComfyUI FlashVSR 批量视频处理工具 - 增强任务监控版（修正版）
-改进的任务状态监控逻辑，支持多API协同监控和智能重试
-修复占位符替换问题
+ComfyUI FlashVSR 批量视频处理工具 - 增强版 v25
+改进功能：
+1. 智能ComfyUI状态监控，带超时重试机制
+2. 内存清理功能，支持memreduct
 """
 
 import json
@@ -13,10 +14,12 @@ import time
 import sys
 import math
 import re
+import subprocess
+import threading
+import signal
 from glob import glob
 from typing import List, Dict, Optional, Tuple, Union
 from pathlib import Path
-import subprocess
 import psutil
 import traceback
 
@@ -40,7 +43,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
         self.api_prompt = f"{comfyui_url}/prompt"
         self.api_history = f"{comfyui_url}/history"
         self.api_view = f"{comfyui_url}/view"
-        self.api_queue = f"{comfyui_url}/queue"  # 新增：队列API
+        self.api_queue = f"{comfyui_url}/queue"
         
         # 添加状态跟踪
         self.comfyui_process = None
@@ -48,8 +51,29 @@ class ComfyUI_FlashVSR_BatchProcessor:
         self.comfyui_script = r"F:\AI\ComfyUI_Mie_V7.0\run_nvidia_gpu_fast_fp16_accumulation_hf_mirror.bat"
         self.output_dir = r"F:\AI\ComfyUI_Mie_V7.0\comfyui\output"
         
+        # memreduct路径配置
+        self.memreduct_path = r"C:\Program Files\Mem Reduct\memreduct.exe"
+        self.memreduct_available = os.path.exists(self.memreduct_path)
+        
+        if self.memreduct_available:
+            print(f"✅ 检测到Mem Reduct: {self.memreduct_path}")
+        else:
+            print(f"⚠️  Mem Reduct未找到: {self.memreduct_path}")
+        
         # 创建日志文件
-        self.log_file = os.path.join(self.comfyui_path, "batch_processing.log")
+        self.log_file = os.path.join(self.comfyui_path, "batch_processing_v25.log")
+        
+        # 状态监控相关
+        self.server_check_interval = 5  # 服务器检查间隔（秒）
+        self.monitor_timeout_factor = 2  # 超时因子，基于frames_per_batch
+        
+        # 内存清理相关
+        self.clean_memory_enabled = True
+        self.memreduct_timeout = 300  # 内存清理超时时间（秒）
+        self.memreduct_check_interval = 5  # 内存清理检查间隔（秒）
+        
+        print(f"📊 服务器检查间隔: {self.server_check_interval}秒")
+        print(f"⏱️  内存清理超时: {self.memreduct_timeout}秒")
         
     def save_processing_status(self, video_name: str, batch_number: int = None, action: str = None):
         """
@@ -110,10 +134,11 @@ class ComfyUI_FlashVSR_BatchProcessor:
             
             print(f"✅ ComfyUI进程已启动，PID: {self.comfyui_process.pid}")
             
-            wait_time = 120
+            # 等待ComfyUI启动（增加等待时间）
+            wait_time = 180  # 3分钟
             for i in range(wait_time):
                 print(f"⏳ 等待ComfyUI启动 ({i+1}/{wait_time})...")
-                if self.check_comfyui_server(timeout=5):
+                if self.check_comfyui_server(timeout=10):
                     print("✅ ComfyUI服务器已准备就绪")
                     return True
                 time.sleep(1)
@@ -139,7 +164,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
             print("❌ ComfyUI重启失败")
             return False
     
-    def check_comfyui_server(self, timeout: int = 5) -> bool:
+    def check_comfyui_server(self, timeout: int = 10) -> bool:
         """检查ComfyUI服务是否可用"""
         try:
             response = requests.get(f"{self.comfyui_url}/", timeout=timeout)
@@ -147,15 +172,41 @@ class ComfyUI_FlashVSR_BatchProcessor:
         except requests.exceptions.RequestException:
             return False
     
-    def get_queue_status(self) -> Optional[Dict]:
+    def wait_for_server_ready(self, timeout_seconds: int = 300) -> bool:
         """
-        获取队列状态
+        等待ComfyUI服务器就绪（改进版）
+        
+        参数:
+            timeout_seconds: 最大等待时间（秒）
         
         返回:
-            队列状态字典或None
+            bool: 服务器是否就绪
         """
+        print(f"⏳ 等待ComfyUI服务器就绪，超时时间: {timeout_seconds}秒")
+        
+        start_time = time.time()
+        check_count = 0
+        
+        while time.time() - start_time < timeout_seconds:
+            check_count += 1
+            
+            if self.check_comfyui_server(timeout=5):
+                print(f"✅ ComfyUI服务器就绪，耗时: {time.time() - start_time:.1f}秒")
+                return True
+            
+            elapsed = time.time() - start_time
+            if elapsed > 30 and check_count % 3 == 0:  # 每30秒显示一次详细状态
+                print(f"⏰ 已等待 {elapsed:.1f} 秒...")
+            
+            time.sleep(self.server_check_interval)
+        
+        print(f"❌ ComfyUI服务器等待超时 ({timeout_seconds}秒)")
+        return False
+    
+    def get_queue_status(self) -> Optional[Dict]:
+        """获取队列状态"""
         try:
-            response = requests.get(self.api_queue, timeout=10)
+            response = requests.get(self.api_queue, timeout=15)
             if response.status_code == 200:
                 return response.json()
         except Exception as e:
@@ -163,15 +214,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
         return None
     
     def check_task_in_queue(self, prompt_id: str) -> str:
-        """
-        检查任务是否在队列中
-        
-        返回:
-            "running" - 正在执行
-            "pending" - 等待中
-            "not_found" - 不在队列中
-            "error" - 检查失败
-        """
+        """检查任务是否在队列中"""
         try:
             queue_data = self.get_queue_status()
             if not queue_data:
@@ -194,19 +237,9 @@ class ComfyUI_FlashVSR_BatchProcessor:
             return "error"
     
     def check_history_api(self, prompt_id: str, max_items: int = 5) -> Dict:
-        """
-        检查历史记录中的任务状态
-        
-        返回状态字典:
-        {
-            "status": "success" | "interrupted" | "error" | "not_found",
-            "completed": bool,
-            "has_error": bool,
-            "message": str
-        }
-        """
+        """检查历史记录中的任务状态"""
         try:
-            response = requests.get(f"{self.api_history}?max_items={max_items}", timeout=10)
+            response = requests.get(f"{self.api_history}?max_items={max_items}", timeout=15)
             if response.status_code == 200:
                 history_data = response.json()
                 
@@ -263,18 +296,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
         }
     
     def get_task_status(self, prompt_id: str) -> Dict:
-        """
-        综合检查任务状态
-        
-        返回状态字典:
-        {
-            "status": "success" | "interrupted" | "error" | "running" | "pending" | "unknown",
-            "in_queue": bool,
-            "in_history": bool,
-            "is_completed": bool,
-            "message": str
-        }
-        """
+        """综合检查任务状态"""
         # 1. 先检查队列
         queue_status = self.check_task_in_queue(prompt_id)
         
@@ -333,9 +355,11 @@ class ComfyUI_FlashVSR_BatchProcessor:
             "message": "无法获取任务状态"
         }
     
-    def smart_wait_for_completion(self, prompt_id: str, video_path: str, max_retries: int = 3) -> Tuple[bool, bool, int]:
+    def smart_wait_for_completion(self, prompt_id: str, video_path: str, 
+                                 frames_per_batch: int, max_retries: int = 3) -> Tuple[bool, bool, int]:
         """
-        智能等待任务完成
+        智能等待任务完成（改进版）
+        添加基于frames_per_batch的动态超时机制
         
         返回:
             (success: bool, need_restart: bool, retry_count: int)
@@ -343,18 +367,31 @@ class ComfyUI_FlashVSR_BatchProcessor:
         video_name = os.path.basename(video_path)
         print(f"⏳ 等待任务 {prompt_id} 完成...")
         
+        # 根据frames_per_batch计算超时时间
+        base_timeout = frames_per_batch * self.monitor_timeout_factor  # 批次帧数 × 2
+        max_wait_time = max(300, base_timeout)  # 至少5分钟，最大为计算值
+        print(f"⏱️  最大等待时间: {max_wait_time}秒 (基于frames_per_batch={frames_per_batch})")
+        
         start_time = time.time()
-        max_wait_time = 3600  # 1小时
-        poll_interval = 5
+        poll_interval = self.server_check_interval
         
         retry_count = 0
         last_status = ""
         
         while time.time() - start_time < max_wait_time:
-            # 检查ComfyUI服务是否可用
-            if not self.check_comfyui_server():
-                print("❌ ComfyUI服务不可用，需要重启")
-                return False, True, retry_count
+            # 检查ComfyUI服务是否可用（带重试机制）
+            server_available = False
+            for _ in range(3):  # 尝试3次
+                if self.check_comfyui_server():
+                    server_available = True
+                    break
+                time.sleep(2)
+            
+            if not server_available:
+                print("❌ ComfyUI服务不可用，但继续等待5秒后重试...")
+                # 不立即返回失败，而是等待后继续检查
+                time.sleep(5)
+                continue
             
             # 获取任务状态
             task_status = self.get_task_status(prompt_id)
@@ -371,7 +408,8 @@ class ComfyUI_FlashVSR_BatchProcessor:
                     "unknown": "❓ 任务状态未知"
                 }
                 message = status_messages.get(current_status, current_status)
-                print(f"[{time.strftime('%H:%M:%S')}] {message}")
+                elapsed_time = time.time() - start_time
+                print(f"[{time.strftime('%H:%M:%S')}] {message} (已等待 {elapsed_time:.1f}秒)")
                 last_status = current_status
             
             # 处理不同状态
@@ -402,19 +440,83 @@ class ComfyUI_FlashVSR_BatchProcessor:
             
             elif current_status in ["running", "pending"]:
                 # 任务正在进行中，继续等待
+                elapsed = time.time() - start_time
+                if elapsed > 60 and int(elapsed) % 30 == 0:  # 每30秒显示一次进度
+                    print(f"⏰ 任务仍在处理中，已等待 {elapsed:.1f}秒")
                 time.sleep(poll_interval)
                 continue
             
             elif current_status == "unknown":
                 # 状态未知，可能是网络问题或任务被系统移除
-                print("⚠️ 任务状态未知，等待后重新检查...")
+                elapsed = time.time() - start_time
+                print(f"⚠️ 任务状态未知，已等待 {elapsed:.1f}秒，继续检查...")
                 time.sleep(poll_interval * 2)
                 continue
         
         # 超时
-        print(f"⏰ 任务 {prompt_id} 等待超时")
+        elapsed_time = time.time() - start_time
+        print(f"⏰ 任务 {prompt_id} 等待超时 ({elapsed_time:.1f}秒)")
         retry_count += 1
         return False, False, retry_count
+    
+    def clean_memory(self):
+        """
+        使用Mem Reduct清理内存
+        即使执行失败或超时，也继续执行后续操作
+        """
+        if not self.clean_memory_enabled or not self.memreduct_available:
+            print("ℹ️ 内存清理功能已禁用或Mem Reduct不可用")
+            return True
+        
+        print(f"🧹 正在执行内存清理 (超时: {self.memreduct_timeout}秒)")
+        
+        try:
+            # 启动Mem Reduct清理
+            process = subprocess.Popen(
+                [self.memreduct_path, "--clean:full"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            
+            start_time = time.time()
+            
+            # 监控进程
+            while time.time() - start_time < self.memreduct_timeout:
+                time.sleep(self.memreduct_check_interval)
+                
+                # 检查进程是否仍在运行
+                poll_result = process.poll()
+                if poll_result is not None:
+                    # 进程已结束
+                    if poll_result == 0:
+                        print(f"✅ 内存清理完成 (耗时: {time.time() - start_time:.1f}秒)")
+                        return True
+                    else:
+                        print(f"⚠️ 内存清理返回非零退出码: {poll_result}")
+                        return False
+                
+                # 显示进度
+                elapsed = time.time() - start_time
+                if elapsed > 30 and int(elapsed) % 30 == 0:
+                    print(f"⏰ 内存清理进行中，已执行 {elapsed:.1f}秒")
+            
+            # 超时，强制终止进程
+            print(f"⏰ 内存清理超时 ({self.memreduct_timeout}秒)，终止进程")
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+            except:
+                try:
+                    process.kill()
+                except:
+                    pass
+            
+            return False
+            
+        except Exception as e:
+            print(f"⚠️ 执行内存清理时出错: {e}")
+            return False
     
     def clean_output_files(self, video_path: str):
         """清理指定视频的输出文件"""
@@ -439,8 +541,8 @@ class ComfyUI_FlashVSR_BatchProcessor:
                         if base_name in filename:
                             os.remove(file_path)
                             deleted_count += 1
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"⚠️ 删除文件失败 {file_path}: {e}")
             
             if deleted_count > 0:
                 print(f"✅ 已清理 {deleted_count} 个输出文件")
@@ -514,10 +616,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
         frames_per_batch: int = 201,
         gpu_device: str = "auto"
     ) -> Dict:
-        """
-        更新工作流中的所有参数 - 兼容性修正版
-        支持占位符替换和直接赋值
-        """
+        """更新工作流中的所有参数"""
         modified_workflow = json.loads(json.dumps(workflow))
         
         print("=== 工作流参数更新开始 ===")
@@ -533,7 +632,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
                     node_data["inputs"]["video"] = video_path
                     print(f"✅ 已设置视频路径: {video_path} (直接赋值)")
         
-        # 2. 设置 FlashVSR 核心参数 - 检查占位符
+        # 2. 设置 FlashVSR 核心参数
         for node_id, node_data in modified_workflow.items():
             if node_data.get("class_type") == "FlashVSRNodeAdv":
                 # 检查scale参数
@@ -572,7 +671,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
                     except:
                         pass
         
-        # 3. 设置 GPU 设备 - 检查占位符
+        # 3. 设置 GPU 设备
         for node_id, node_data in modified_workflow.items():
             if node_data.get("class_type") == "FlashVSRInitPipe":
                 current_device = str(node_data["inputs"].get("device", ""))
@@ -593,7 +692,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
                     node_data["inputs"]["device"] = device_value
                     print(f"✅ 已设置GPU设备: {device_value} (直接赋值)")
         
-        # 4. 设置总帧数 - 检查占位符
+        # 4. 设置总帧数
         if total_frames is None:
             total_frames, _, _ = self.get_video_frame_count(video_path)
             print(f"📊 自动检测到视频总帧数: {total_frames}")
@@ -630,7 +729,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
                     else:
                         print(f"⚠️  节点 8 的值格式异常: {current_value}")
         
-        # 5. 设置输出文件名前缀 - 检查占位符
+        # 5. 设置输出文件名前缀
         if output_prefix is None:
             base_name = os.path.splitext(os.path.basename(video_path))[0]
             output_prefix = f"flashvsr_{base_name}_enhanced"
@@ -649,13 +748,12 @@ class ComfyUI_FlashVSR_BatchProcessor:
         return modified_workflow
     
     def queue_prompt(self, workflow: Dict, timeout: int = 300) -> Optional[str]:
-        """将工作流发送到 ComfyUI 执行 - 带详细调试信息"""
+        """将工作流发送到 ComfyUI 执行"""
         if not self.check_comfyui_server():
             print("❌ ComfyUI 服务不可用，无法提交任务")
             return None
 
         print("=== 工作流参数验证 ===")
-        # 验证关键节点
         key_nodes = ["5", "8", "50", "49", "62"]
         for node_id in key_nodes:
             if node_id in workflow:
@@ -695,21 +793,11 @@ class ComfyUI_FlashVSR_BatchProcessor:
                 print(f"❌ 请求失败，状态码: {response.status_code}")
                 print(f"📄 错误详情: {response.text[:500]}")
                 
-                # 如果收到400错误，可能是工作流格式问题
                 if response.status_code == 400:
                     print("🔍 分析400错误可能的原因:")
                     print("  1. 工作流中存在未替换的占位符（如{{gpu}}、{{TOTAL_FRAMES}}）")
                     print("  2. 工作流格式不符合ComfyUI要求")
                     print("  3. 某些节点参数类型不正确")
-                    
-                    # 检查工作流中是否还有占位符
-                    workflow_str = json.dumps(workflow)
-                    placeholder_patterns = ["{{gpu}}", "{{TOTAL_FRAMES}}", "{{FRAMES_PER_BATCH}}", 
-                                          "{{OUTPUT_PREFIX}}", "{{VIDEO_PATH}}", "{{scale}}"]
-                    
-                    for pattern in placeholder_patterns:
-                        if pattern in workflow_str:
-                            print(f"⚠️  发现未替换的占位符: {pattern}")
                 
                 return None
                 
@@ -757,7 +845,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
         max_retries: int = 3
     ) -> Tuple[bool, int, str]:
         """
-        处理单个视频文件，支持智能重试
+        处理单个视频文件，支持智能重试和内存清理
         
         返回:
             (success: bool, retry_count: int, final_prompt_id: str)
@@ -803,11 +891,12 @@ class ComfyUI_FlashVSR_BatchProcessor:
                     continue
                 return False, retry_count, ""
             
-            # 3. 智能等待任务完成
+            # 3. 智能等待任务完成（使用改进的等待机制）
             success, need_restart, wait_retries = self.smart_wait_for_completion(
                 current_prompt_id, 
                 video_path,
-                max_retries - retry_count + 1  # 剩余重试次数
+                frames_per_batch,  # 传递frames_per_batch用于计算超时时间
+                max_retries - retry_count + 1
             )
             
             if need_restart:
@@ -824,6 +913,15 @@ class ComfyUI_FlashVSR_BatchProcessor:
             elif success:
                 # 任务成功完成
                 print(f"✅ 视频 {video_name} 处理成功")
+                
+                # 4. 执行内存清理（成功时才执行）
+                print("🧹 任务成功，执行内存清理...")
+                memory_clean_success = self.clean_memory()
+                if memory_clean_success:
+                    print("✅ 内存清理成功")
+                else:
+                    print("⚠️ 内存清理失败或超时，继续下一个任务")
+                
                 output_files = self.get_output_files(current_prompt_id)
                 if output_files:
                     print(f"📁 生成的文件:")
@@ -889,6 +987,8 @@ class ComfyUI_FlashVSR_BatchProcessor:
         print(f"🔄 每个任务最多重试: {max_retries}次")
         print(f"💾 输出目录: {self.output_dir}")
         print(f"📋 工作流模板: {workflow_template_path}")
+        print(f"⏱️  动态超时因子: {self.monitor_timeout_factor} × frames_per_batch")
+        print(f"🧹 内存清理: {'启用' if self.memreduct_available else '禁用'}")
         
         for i, video_path in enumerate(video_files, 1):
             print(f"\n📊 进度: {i}/{total_videos}")
@@ -974,31 +1074,40 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description='ComfyUI FlashVSR 批量视频处理工具 - 增强任务监控版（修正版）',
+        description='ComfyUI FlashVSR 批量视频处理工具 - 增强任务监控版 v25',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+主要改进 v25:
+1. ComfyUI状态监控改进:
+   - 当API服务不可用时，不是立即判定失败
+   - 每5秒检查一次服务器状态
+   - 超时时间基于frames_per_batch动态计算（帧数×2）
+   - 提供详细的等待进度显示
+
+2. 内存清理功能:
+   - 每个视频任务成功后自动执行memreduct --clean:full
+   - 每5秒检查一次清理进程状态
+   - 超时300秒，超时后强制终止清理进程
+   - 即使清理失败或超时，也继续下一个任务
+   - 自动检测Mem Reduct路径
+
 使用示例:
   # 处理单个视频文件，使用GPU 0
-  python batch_process_videos.py --input video.mp4 --gpu 0
+  python v25.py --input video.mp4 --gpu 0
   
   # 处理目录下的所有视频文件，使用GPU 1
-  python batch_process_videos.py --input ./videos --gpu 1
+  python v25.py --input ./videos --gpu 1
   
-  # 自动选择GPU
-  python batch_process_videos.py --input ./videos --gpu auto
+  # 自定义每批帧数，自动计算超时
+  python v25.py --input ./videos --frames-per-batch 150 --gpu 0
   
-  # 自定义重试次数
-  python batch_process_videos.py --input ./videos --max-retries 5 --gpu 0
+  # 禁用内存清理
+  python v25.py --input ./videos --no-memory-clean --gpu 0
 
-主要改进:
-  - 修复占位符替换问题（支持 {{gpu}}, {{TOTAL_FRAMES}}, {{FRAMES_PER_BATCH}} 等）
-  - 增强调试信息输出
-  - 智能任务状态监控（使用队列API和历史API）
-  - 自动区分任务状态：运行中、排队中、成功、中断、错误
-  - 失败时自动重试，最多重试3次（可配置）
-  - 当ComfyUI服务不可用时自动重启
-  - 重启前清理当前视频的输出文件
-  - 重启后继续处理当前视频
+参数说明:
+  --frames-per-batch: 每批处理的帧数，影响超时时间计算（超时=帧数×2秒）
+  --monitor-timeout-factor: 超时因子，默认2（超时时间=帧数×因子）
+  --memreduct-path: Mem Reduct路径，默认C:\Program Files\Mem Reduct\memreduct.exe
         """
     )
     
@@ -1029,6 +1138,23 @@ def main():
     # 重试参数
     parser.add_argument('--max-retries', type=int, default=3,
                        help='每个任务的最大重试次数 (默认: 3)')
+    
+    # 监控参数
+    parser.add_argument('--monitor-timeout-factor', type=float, default=2.0,
+                       help='监控超时因子 (默认: 2.0, 超时=帧数×因子)')
+    parser.add_argument('--check-interval', type=int, default=5,
+                       help='服务器检查间隔 (秒, 默认: 5)')
+    
+    # 内存清理参数
+    parser.add_argument('--memreduct-path', type=str, 
+                       default=r'C:\Program Files\Mem Reduct\memreduct.exe',
+                       help='Mem Reduct可执行文件路径 (默认: C:\Program Files\Mem Reduct\memreduct.exe)')
+    parser.add_argument('--no-memory-clean', action='store_true',
+                       help='禁用内存清理功能')
+    parser.add_argument('--memreduct-timeout', type=int, default=300,
+                       help='内存清理超时时间 (秒, 默认: 300)')
+    parser.add_argument('--memreduct-check-interval', type=int, default=5,
+                       help='内存清理检查间隔 (秒, 默认: 5)')
     
     # GPU参数
     parser.add_argument('--gpu', type=str, default='auto',
@@ -1068,6 +1194,12 @@ def main():
     print(f"  tile_overlap: {args.tile_overlap}")
     print(f"  frames_per_batch: {args.frames_per_batch}")
     print(f"  max_retries: {args.max_retries}")
+    print(f"  monitor_timeout_factor: {args.monitor_timeout_factor}")
+    print(f"  check_interval: {args.check_interval}")
+    
+    # 动态超时计算
+    dynamic_timeout = args.frames_per_batch * args.monitor_timeout_factor
+    print(f"  动态超时: {dynamic_timeout}秒 (frames_per_batch × timeout_factor)")
     
     if args.total_frames:
         print(f"  total_frames: {args.total_frames} (手动指定)")
@@ -1084,8 +1216,29 @@ def main():
     else:
         print(f"🎮 GPU设备: {args.gpu}")
     
+    # 内存清理配置
+    if args.no_memory_clean:
+        print(f"🧹 内存清理: 已禁用")
+    else:
+        print(f"🧹 内存清理: 已启用")
+        print(f"  memreduct_path: {args.memreduct_path}")
+        print(f"  memreduct_timeout: {args.memreduct_timeout}秒")
+        print(f"  memreduct_check_interval: {args.memreduct_check_interval}秒")
+    
     # 初始化处理器
     processor = ComfyUI_FlashVSR_BatchProcessor(comfyui_url=args.server)
+    
+    # 配置处理器参数
+    processor.server_check_interval = args.check_interval
+    processor.monitor_timeout_factor = args.monitor_timeout_factor
+    
+    if args.memreduct_path:
+        processor.memreduct_path = args.memreduct_path
+        processor.memreduct_available = os.path.exists(args.memreduct_path)
+    
+    processor.clean_memory_enabled = not args.no_memory_clean
+    processor.memreduct_timeout = args.memreduct_timeout
+    processor.memreduct_check_interval = args.memreduct_check_interval
     
     # 批量处理
     start_time = time.time()
@@ -1105,7 +1258,26 @@ def main():
     
     # 计算总耗时
     total_time = time.time() - start_time
-    print(f"\n⏱️  总耗时: {total_time:.2f} 秒")
+    print(f"\n⏱️  总耗时: {total_time:.2f} 秒 ({total_time/60:.1f} 分钟)")
+    
+    # 输出详细统计
+    if results:
+        success_count = sum(1 for r in results.values() if r["success"])
+        fail_count = len(results) - success_count
+        total_retries = sum(r["retry_count"] for r in results.values())
+        
+        print(f"\n📊 详细统计:")
+        print(f"  处理视频数: {len(results)}")
+        print(f"  成功: {success_count}")
+        print(f"  失败: {fail_count}")
+        print(f"  总重试次数: {total_retries}")
+        print(f"  平均重试次数: {total_retries/len(results):.1f}")
+        
+        if fail_count > 0:
+            print(f"\n❌ 失败视频列表:")
+            for video_path, result in results.items():
+                if not result["success"]:
+                    print(f"  - {os.path.basename(video_path)}: {result['message']}")
     
     # 最后关闭ComfyUI进程
     print(f"\n🔧 处理完成，正在关闭ComfyUI进程...")
