@@ -1033,6 +1033,11 @@ class ComfyUI_FlashVSR_BatchProcessor:
                 # 任务失败但不是因为ComfyUI需要重启
                 print(f"❌ 视频 {video_name} 处理失败")
                 
+                # 新增：失败后立即清理内存
+                if self.clean_memory_enabled:
+                    print("⚠️ 任务失败，执行紧急内存清理...")
+                    self.clean_memory()
+
                 if retry_count < max_retries:
                     print(f"⏳ 等待5秒后重试...")
                     time.sleep(5)
