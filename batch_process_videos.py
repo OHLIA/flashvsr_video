@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ComfyUI FlashVSR 批量视频处理工具 - 增强版 v25.1
+ComfyUI FlashVSR 批量视频处理工具 - 增强版 v25.2
 改进功能：
 1. 智能ComfyUI状态监控，带超时重试机制
-2. 简化的内存清理功能，直接调用系统命令
+2. 增强的内存清理功能，支持弹窗监控和关闭
 """
 
 import json
@@ -22,6 +22,7 @@ from typing import List, Dict, Optional, Tuple, Union
 from pathlib import Path
 import psutil
 import traceback
+import pygetwindow as gw  # 新增：用于窗口管理
 
 # 尝试导入 pymediainfo
 try:
@@ -30,6 +31,14 @@ try:
 except ImportError:
     PYMEDIAINFO_AVAILABLE = False
     print("⚠️  pymediainfo 未安装，将使用备用方法获取视频信息")
+
+# 尝试导入 pygetwindow
+try:
+    import pygetwindow as gw
+    PYGETWINDOW_AVAILABLE = True
+except ImportError:
+    PYGETWINDOW_AVAILABLE = False
+    print("⚠️  pygetwindow 未安装，将使用备用窗口管理方法")
 
 class ComfyUI_FlashVSR_BatchProcessor:
     def __init__(self, comfyui_url: str = "http://127.0.0.1:8188"):
@@ -52,7 +61,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
         self.output_dir = r"F:\AI\ComfyUI_Mie_V7.0\comfyui\output"
         
         # 创建日志文件
-        self.log_file = os.path.join(self.comfyui_path, "batch_processing_v25_1.log")
+        self.log_file = os.path.join(self.comfyui_path, "batch_processing_v25_2.log")
         
         # 状态监控相关
         self.server_check_interval = 5  # 服务器检查间隔（秒）
@@ -450,10 +459,136 @@ class ComfyUI_FlashVSR_BatchProcessor:
         retry_count += 1
         return False, False, retry_count
     
+    def check_memreduct_errorlevel(self):
+        """
+        检查memreduct命令的返回码
+        使用cmd的errorlevel检查
+        """
+        try:
+            # 使用cmd命令检查memreduct的返回码
+            cmd = 'memreduct --clean:full && echo %errorlevel%'
+            result = subprocess.run(
+                ["cmd", "/c", cmd],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=10
+            )
+            
+            # 解析输出获取errorlevel
+            output_lines = result.stdout.strip().split('\n')
+            if output_lines:
+                last_line = output_lines[-1]
+                if last_line.isdigit():
+                    errorlevel = int(last_line)
+                    if errorlevel == 0:
+                        print(f"✅ memreduct执行成功，返回码: {errorlevel}")
+                        return True, errorlevel
+                    else:
+                        print(f"⚠️ memreduct执行失败，返回码: {errorlevel}")
+                        return False, errorlevel
+            
+            print("⚠️ 无法解析memreduct返回码")
+            return False, -1
+            
+        except subprocess.TimeoutExpired:
+            print("⚠️ memreduct命令执行超时")
+            return False, -1
+        except Exception as e:
+            print(f"⚠️ 执行memreduct命令失败: {e}")
+            return False, -1
+    
+    def find_memreduct_windows(self):
+        """
+        查找标题包含"Mem Reduct"的窗口
+        返回窗口列表
+        """
+        try:
+            if not PYGETWINDOW_AVAILABLE:
+                # 备用方法：使用Windows API
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+                    
+                    user32 = ctypes.windll.user32
+                    windows = []
+                    
+                    def enum_windows_proc(hwnd, lParam):
+                        if user32.IsWindowVisible(hwnd):
+                            length = user32.GetWindowTextLengthW(hwnd)
+                            if length > 0:
+                                buffer = ctypes.create_unicode_buffer(length + 1)
+                                user32.GetWindowTextW(hwnd, buffer, length + 1)
+                                window_title = buffer.value
+                                if "Mem Reduct" in window_title:
+                                    windows.append({
+                                        'hwnd': hwnd,
+                                        'title': window_title
+                                    })
+                        return True
+                    
+                    enum_func = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+                    user32.EnumWindows(enum_func(enum_windows_proc), 0)
+                    return windows
+                except:
+                    return []
+            
+            # 使用pygetwindow查找窗口
+            windows = []
+            for window in gw.getAllWindows():
+                if "Mem Reduct" in window.title:
+                    windows.append({
+                        'hwnd': window._hWnd,
+                        'title': window.title,
+                        'window': window
+                    })
+            return windows
+            
+        except Exception as e:
+            print(f"⚠️ 查找窗口失败: {e}")
+            return []
+    
+    def close_memreduct_windows(self):
+        """
+        关闭所有标题包含"Mem Reduct"的窗口
+        """
+        try:
+            windows = self.find_memreduct_windows()
+            if not windows:
+                print("ℹ️ 未找到Mem Reduct弹窗")
+                return 0
+            
+            closed_count = 0
+            for window_info in windows:
+                try:
+                    if PYGETWINDOW_AVAILABLE:
+                        window = window_info.get('window')
+                        if window:
+                            window.close()
+                            closed_count += 1
+                            print(f"✅ 已关闭窗口: {window_info['title']}")
+                    else:
+                        # 备用方法：使用Windows API关闭窗口
+                        import ctypes
+                        ctypes.windll.user32.SendMessageW(window_info['hwnd'], 0x0010, 0, 0)
+                        closed_count += 1
+                        print(f"✅ 已关闭窗口: {window_info['title']}")
+                except Exception as e:
+                    print(f"⚠️ 关闭窗口失败 {window_info['title']}: {e}")
+            
+            return closed_count
+            
+        except Exception as e:
+            print(f"⚠️ 关闭窗口时出错: {e}")
+            return 0
+    
     def clean_memory(self):
         """
-        使用系统命令清理内存
-        不再检查特定工具路径，直接执行memreduct命令
+        增强的内存清理功能
+        1. 执行memreduct命令
+        2. 检查返回码是否为0
+        3. 如果返回码为0，等待弹窗出现
+        4. 关闭弹窗后继续执行
         """
         if not self.clean_memory_enabled:
             print("ℹ️ 内存清理功能已禁用")
@@ -462,57 +597,54 @@ class ComfyUI_FlashVSR_BatchProcessor:
         print(f"🧹 正在执行内存清理 (超时: {self.memreduct_timeout}秒)")
         
         try:
-            # 直接调用memreduct命令，假设已在系统PATH中
-            process = subprocess.Popen(
-                ["memreduct", "--clean:full"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
+            # 1. 执行memreduct命令并检查返回码
+            success, errorlevel = self.check_memreduct_errorlevel()
             
+            if not success or errorlevel != 0:
+                print(f"⚠️ memreduct执行失败或返回码非零: {errorlevel}")
+                return False
+            
+            print("✅ memreduct命令执行成功，开始监控弹窗...")
+            
+            # 2. 等待Mem Reduct弹窗出现（超时300秒）
             start_time = time.time()
+            window_found = False
             
-            # 监控进程
             while time.time() - start_time < self.memreduct_timeout:
-                time.sleep(self.memreduct_check_interval)
+                # 检查是否有Mem Reduct窗口
+                windows = self.find_memreduct_windows()
+                if windows:
+                    window_found = True
+                    print(f"✅ 检测到Mem Reduct弹窗 ({len(windows)}个)")
+                    break
                 
-                # 检查进程是否仍在运行
-                poll_result = process.poll()
-                if poll_result is not None:
-                    # 进程已结束
-                    if poll_result == 0:
-                        print(f"✅ 内存清理完成 (耗时: {time.time() - start_time:.1f}秒)")
-                        return True
-                    else:
-                        print(f"⚠️ 内存清理返回非零退出码: {poll_result}")
-                        # 继续执行，不因清理失败而中断主流程
-                        return False
-                
-                # 显示进度
+                # 每5秒检查一次
                 elapsed = time.time() - start_time
                 if elapsed > 30 and int(elapsed) % 30 == 0:
-                    print(f"⏰ 内存清理进行中，已执行 {elapsed:.1f}秒")
+                    print(f"⏰ 等待弹窗出现，已等待 {elapsed:.1f}秒")
+                
+                time.sleep(self.memreduct_check_interval)
             
-            # 超时，强制终止进程
-            print(f"⏰ 内存清理超时 ({self.memreduct_timeout}秒)，终止进程")
-            try:
-                process.terminate()
-                process.wait(timeout=5)
-            except:
-                try:
-                    process.kill()
-                except:
-                    pass
+            if not window_found:
+                print(f"⏰ 等待Mem Reduct弹窗超时 ({self.memreduct_timeout}秒)")
+                return False
             
-            # 即使超时也继续执行，不中断主流程
-            return False
+            # 3. 关闭Mem Reduct弹窗
+            print("正在关闭Mem Reduct弹窗...")
+            closed_count = self.close_memreduct_windows()
+            
+            if closed_count > 0:
+                print(f"✅ 已关闭 {closed_count} 个Mem Reduct弹窗")
+                return True
+            else:
+                print("⚠️ 未成功关闭Mem Reduct弹窗")
+                return False
             
         except FileNotFoundError:
             print("⚠️ memreduct命令未找到，请确保memreduct已在系统PATH中")
             return False
         except Exception as e:
             print(f"⚠️ 执行内存清理时出错: {e}")
-            # 继续执行，不因清理失败而中断主流程
             return False
     
     def clean_output_files(self, video_path: str):
@@ -911,12 +1043,12 @@ class ComfyUI_FlashVSR_BatchProcessor:
                 # 任务成功完成
                 print(f"✅ 视频 {video_name} 处理成功")
                 
-                # 4. 执行内存清理（成功时才执行）
+                # 4. 执行增强的内存清理（成功时才执行）
                 if self.clean_memory_enabled:
                     print("🧹 任务成功，执行内存清理...")
                     memory_clean_success = self.clean_memory()
                     if memory_clean_success:
-                        print("✅ 内存清理成功")
+                        print("✅ 内存清理成功完成")
                     else:
                         print("⚠️ 内存清理失败或超时，继续下一个任务")
                 
@@ -987,6 +1119,10 @@ class ComfyUI_FlashVSR_BatchProcessor:
         print(f"📋 工作流模板: {workflow_template_path}")
         print(f"⏱️  动态超时因子: {self.monitor_timeout_factor} × frames_per_batch")
         print(f"🧹 内存清理: {'启用' if self.clean_memory_enabled else '禁用'}")
+        if self.clean_memory_enabled and PYGETWINDOW_AVAILABLE:
+            print(f"  - 弹窗监控: 启用 (使用pygetwindow)")
+        elif self.clean_memory_enabled and not PYGETWINDOW_AVAILABLE:
+            print(f"  - 弹窗监控: 启用 (使用备用方法)")
         
         for i, video_path in enumerate(video_files, 1):
             print(f"\n📊 进度: {i}/{total_videos}")
@@ -1072,35 +1208,38 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description='ComfyUI FlashVSR 批量视频处理工具 - 增强任务监控版 v25.1',
+        description='ComfyUI FlashVSR 批量视频处理工具 - 增强任务监控版 v25.2',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-主要改进 v25.1:
+主要改进 v25.2:
 1. ComfyUI状态监控改进:
    - 当API服务不可用时，不是立即判定失败
    - 每5秒检查一次服务器状态
    - 超时时间基于frames_per_batch动态计算（帧数×2）
    - 提供详细的等待进度显示
 
-2. 内存清理功能:
-   - 每个视频任务成功后自动执行memreduct --clean:full
-   - 每5秒检查一次清理进程状态
-   - 超时300秒，超时后强制终止清理进程
+2. 增强的内存清理功能:
+   - 执行memreduct --clean:full并检查%errorlevel%返回码
+   - 当返回码为0时，监控标题为"Mem Reduct"的弹窗
+   - 每5秒检查一次弹窗，超时300秒
+   - 自动关闭Mem Reduct弹窗
    - 即使清理失败或超时，也继续下一个任务
-   - 简化内存清理，直接调用系统命令
+
+3. 新增依赖:
+   - pygetwindow: 用于窗口管理（可选，提供备用方法）
 
 使用示例:
   # 处理单个视频文件，使用GPU 0
-  python v25.py --input video.mp4 --gpu 0
+  python v25_2.py --input video.mp4 --gpu 0
   
   # 处理目录下的所有视频文件，使用GPU 1
-  python v25.py --input ./videos --gpu 1
+  python v25_2.py --input ./videos --gpu 1
   
   # 自定义每批帧数，自动计算超时
-  python v25.py --input ./videos --frames-per-batch 150 --gpu 0
+  python v25_2.py --input ./videos --frames-per-batch 150 --gpu 0
   
   # 禁用内存清理
-  python v25.py --input ./videos --no-memory-clean --gpu 0
+  python v25_2.py --input ./videos --no-memory-clean --gpu 0
 
 参数说明:
   --frames-per-batch: 每批处理的帧数，影响超时时间计算（超时=帧数×2秒）
@@ -1170,6 +1309,15 @@ def main():
             print("退出程序")
             return
     
+    # 检查 pygetwindow
+    if not PYGETWINDOW_AVAILABLE and not args.no_memory_clean:
+        print("⚠️  未检测到 pygetwindow 库，将使用备用窗口管理方法")
+        print("建议安装: pip install pygetwindow")
+        response = input("是否继续? (y/n): ")
+        if response.lower() != 'y':
+            print("退出程序")
+            return
+    
     # 准备视频文件列表
     video_files = collect_video_files(args.input, args.pattern)
     
@@ -1217,6 +1365,10 @@ def main():
         print(f"🧹 内存清理: 已启用")
         print(f"  memreduct_timeout: {args.memreduct_timeout}秒")
         print(f"  memreduct_check_interval: {args.memreduct_check_interval}秒")
+        if PYGETWINDOW_AVAILABLE:
+            print(f"  窗口管理: 使用pygetwindow")
+        else:
+            print(f"  窗口管理: 使用备用方法")
     
     # 初始化处理器
     processor = ComfyUI_FlashVSR_BatchProcessor(comfyui_url=args.server)
