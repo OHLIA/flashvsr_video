@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ComfyUI FlashVSR 批量视频处理工具 - 增强版 v25.3
+ComfyUI FlashVSR 批量视频处理工具 - 增强版 v25.4
 改进功能：
 1. 智能ComfyUI状态监控，带超时重试机制
 2. 异步内存清理功能，基于测试成功的窗口关闭方法
+3. 改进的重试机制：达到最大重试次数后重启ComfyUI继续尝试
 改进点：
 - 异步执行memreduct，避免命令执行超时
 - 立即开始窗口监控，不等待命令完成
 - 增强的窗口关闭重试机制
+- 改进的重试逻辑：达到最大重试次数后重启ComfyUI继续尝试
 """
 
 import json
@@ -58,7 +60,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
         self.output_dir = r"F:\AI\ComfyUI_Mie_V7.0\comfyui\output"
         
         # 创建日志文件
-        self.log_file = os.path.join(self.comfyui_path, "batch_processing_v25_3.log")
+        self.log_file = os.path.join(self.comfyui_path, "batch_processing_v25_5.log")
         
         # 状态监控相关
         self.server_check_interval = 5  # 服务器检查间隔（秒）
@@ -68,6 +70,10 @@ class ComfyUI_FlashVSR_BatchProcessor:
         self.clean_memory_enabled = True
         self.memreduct_timeout = 300  # 内存清理超时时间（秒）
         self.memreduct_check_interval = 5  # 内存清理检查间隔（秒）
+        
+        # 重试相关统计
+        self.total_restarts = 0
+        self.total_failures_after_restart = 0
         
         print(f"📊 服务器检查间隔: {self.server_check_interval}秒")
         print(f"⏱️  内存清理超时: {self.memreduct_timeout}秒")
@@ -313,13 +319,15 @@ class ComfyUI_FlashVSR_BatchProcessor:
         print("🔄 正在重启ComfyUI服务...")
         self.save_processing_status("系统", action="重启ComfyUI")
         
+        self.total_restarts += 1
+        
         self.kill_comfyui_processes()
         
         if self.start_comfyui():
             print("✅ ComfyUI重启成功")
             return True
         else:
-            print("❌ ComfyUI重启失败")
+            print("❌ Comfyui重启失败")
             return False
     
     def check_comfyui_server(self, timeout: int = 10) -> bool:
@@ -945,6 +953,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
     ) -> Tuple[bool, int, str]:
         """
         处理单个视频文件，支持智能重试和内存清理
+        改进：达到最大重试次数后重启ComfyUI然后继续尝试
         
         返回:
             (success: bool, retry_count: int, final_prompt_id: str)
@@ -957,9 +966,15 @@ class ComfyUI_FlashVSR_BatchProcessor:
         retry_count = 0
         current_prompt_id = None
         
-        while retry_count < max_retries:
+        while True:  # 无限循环，直到成功或达到特殊条件
             retry_count += 1
-            print(f"\n🔄 尝试 {retry_count}/{max_retries}")
+            
+            # 检查是否超过最大重试次数
+            if retry_count > max_retries * 2:  # 允许额外的重启后重试
+                print(f"❌ 已达到总最大尝试次数 ({max_retries * 2})，放弃处理此视频")
+                return False, retry_count, current_prompt_id if current_prompt_id else ""
+            
+            print(f"\n🔄 尝试 {retry_count} (原始重试: {min(retry_count, max_retries)}/{max_retries})")
             
             # 1. 检查并确保ComfyUI正在运行
             if not self.check_comfyui_server():
@@ -988,14 +1003,27 @@ class ComfyUI_FlashVSR_BatchProcessor:
                     print("⏳ 5秒后重试...")
                     time.sleep(5)
                     continue
-                return False, retry_count, ""
+                else:
+                    # 达到最大重试次数，重启ComfyUI后继续
+                    print("⚠️ 达到原始最大重试次数，重启ComfyUI后继续尝试...")
+                    if self.clean_memory_enabled:
+                        print("🧹 重启前执行内存清理...")
+                        self.clean_memory()
+                    
+                    if self.restart_comfyui():
+                        print("✅ ComfyUI重启成功，继续尝试此视频")
+                        time.sleep(10)  # 等待ComfyUI完全启动
+                        continue
+                    else:
+                        print("❌ ComfyUI重启失败，放弃处理此视频")
+                        return False, retry_count, ""
             
             # 3. 智能等待任务完成（使用改进的等待机制）
             success, need_restart, wait_retries = self.smart_wait_for_completion(
                 current_prompt_id, 
                 video_path,
                 frames_per_batch,  # 传递frames_per_batch用于计算超时时间
-                max_retries - retry_count + 1
+                max_retries - min(retry_count, max_retries) + 1
             )
             
             if need_restart:
@@ -1031,23 +1059,35 @@ class ComfyUI_FlashVSR_BatchProcessor:
             
             else:
                 # 任务失败但不是因为ComfyUI需要重启
-                print(f"❌ 视频 {video_name} 处理失败")
+                print(f"❌ 视频 {video_name} 处理失败 (尝试 {retry_count})")
                 
                 # 新增：失败后立即清理内存
                 if self.clean_memory_enabled:
                     print("⚠️ 任务失败，执行紧急内存清理...")
                     self.clean_memory()
-
+                
                 if retry_count < max_retries:
                     print(f"⏳ 等待5秒后重试...")
                     time.sleep(5)
                     self.clean_output_files(video_path)
                     continue
                 else:
-                    print(f"❌ 已达到最大重试次数 ({max_retries})")
-                    return False, retry_count, current_prompt_id
-        
-        return False, retry_count, current_prompt_id if current_prompt_id else ""
+                    # 达到最大重试次数，重启ComfyUI后继续尝试
+                    print(f"❌ 已达到原始最大重试次数 ({max_retries})")
+                    print("🔄 重启ComfyUI后继续尝试此视频...")
+                    
+                    if self.clean_memory_enabled:
+                        print("🧹 重启前执行内存清理...")
+                        self.clean_memory()
+                    
+                    if self.restart_comfyui():
+                        print("✅ ComfyUI重启成功，继续尝试此视频")
+                        time.sleep(10)  # 等待ComfyUI完全启动
+                        self.clean_output_files(video_path)
+                        continue
+                    else:
+                        print("❌ ComfyUI重启失败，放弃处理此视频")
+                        return False, retry_count, current_prompt_id
     
     def batch_process_videos(
         self, 
@@ -1089,7 +1129,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
         print(f"🎬 开始批量处理 {total_videos} 个视频")
         print(f"⚙️  参数: scale={scale}, tile_size={tile_size}, tile_overlap={tile_overlap}")
         print(f"🎮 GPU设备: {gpu_device}")
-        print(f"🔄 每个任务最多重试: {max_retries}次")
+        print(f"🔄 每个任务最大重试: {max_retries}次 (可重启后继续)")
         print(f"💾 输出目录: {self.output_dir}")
         print(f"📋 工作流模板: {workflow_template_path}")
         print(f"⏱️  动态超时因子: {self.monitor_timeout_factor} × frames_per_batch")
@@ -1122,10 +1162,11 @@ class ComfyUI_FlashVSR_BatchProcessor:
                 "success": success,
                 "retry_count": retry_count,
                 "prompt_id": prompt_id,
-                "message": "成功" if success else f"失败（重试{retry_count}次）"
+                "message": "成功" if success else f"失败（尝试{retry_count}次）"
             }
             
             if not success:
+                self.total_failures_after_restart += 1
                 print(f"⚠️ 视频 {os.path.basename(video_path)} 处理失败，继续下一个")
         
         # 输出统计信息
@@ -1134,11 +1175,14 @@ class ComfyUI_FlashVSR_BatchProcessor:
         print(f"{'='*60}")
         
         success_count = sum(1 for r in results.values() if r["success"])
-        total_retries = sum(r["retry_count"] for r in results.values())
+        fail_count = len(results) - success_count
+        total_attempts = sum(r["retry_count"] for r in results.values())
         
         print(f"✅ 成功: {success_count}/{total_videos}")
-        print(f"❌ 失败: {total_videos - success_count}/{total_videos}")
-        print(f"🔄 总重试次数: {total_retries}")
+        print(f"❌ 失败: {fail_count}/{total_videos}")
+        print(f"🔄 总尝试次数: {total_attempts}")
+        print(f"🔁 总重启次数: {self.total_restarts}")
+        print(f"⚠️ 重启后仍失败: {self.total_failures_after_restart}")
         
         return results
 
@@ -1179,10 +1223,10 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description='ComfyUI FlashVSR 批量视频处理工具 - 增强任务监控版 v25.3',
+        description='ComfyUI FlashVSR 批量视频处理工具 - 增强任务监控版 v25.4',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-主要改进 v25.3:
+主要改进 v25.4:
 1. ComfyUI状态监控改进:
    - 当API服务不可用时，不是立即判定失败
    - 每5秒检查一次服务器状态
@@ -1197,18 +1241,23 @@ def main():
    - 即使清理失败或超时，也继续下一个任务
    - 基于测试成功的异步窗口关闭方法
 
+3. 改进的重试机制:
+   - 达到最大重试次数后，重启ComfyUI继续尝试同一个文件
+   - 增加重启计数器
+   - 改进的重试逻辑，提供更好的容错性
+
 使用示例:
   # 处理单个视频文件，使用GPU 0
-  python v25_3.py --input video.mp4 --gpu 0
+  python v25_5.py --input video.mp4 --gpu 0
   
   # 处理目录下的所有视频文件，使用GPU 1
-  python v25_3.py --input ./videos --gpu 1
+  python v25_5.py --input ./videos --gpu 1
   
   # 自定义每批帧数，自动计算超时
-  python v25_3.py --input ./videos --frames-per-batch 150 --gpu 0
+  python v25_5.py --input ./videos --frames-per-batch 150 --gpu 0
   
   # 禁用内存清理
-  python v25_3.py --input ./videos --no-memory-clean --gpu 0
+  python v25_5.py --input ./videos --no-memory-clean --gpu 0
 
 参数说明:
   --frames-per-batch: 每批处理的帧数，影响超时时间计算（超时=帧数×2秒）
@@ -1367,8 +1416,10 @@ def main():
         print(f"  处理视频数: {len(results)}")
         print(f"  成功: {success_count}")
         print(f"  失败: {fail_count}")
-        print(f"  总重试次数: {total_retries}")
-        print(f"  平均重试次数: {total_retries/len(results):.1f}")
+        print(f"  总尝试次数: {total_retries}")
+        print(f"  平均尝试次数: {total_retries/len(results):.1f}")
+        print(f"  总重启次数: {processor.total_restarts}")
+        print(f"  重启后仍失败: {processor.total_failures_after_restart}")
         
         if fail_count > 0:
             print(f"\n❌ 失败视频列表:")
