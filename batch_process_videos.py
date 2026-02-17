@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ComfyUI FlashVSR 批量视频处理工具 - 增强版 v25
+ComfyUI FlashVSR 批量视频处理工具 - 增强版 v25.1
 改进功能：
 1. 智能ComfyUI状态监控，带超时重试机制
-2. 内存清理功能，支持memreduct
+2. 简化的内存清理功能，直接调用系统命令
 """
 
 import json
@@ -51,17 +51,8 @@ class ComfyUI_FlashVSR_BatchProcessor:
         self.comfyui_script = r"F:\AI\ComfyUI_Mie_V7.0\run_nvidia_gpu_fast_fp16_accumulation_hf_mirror.bat"
         self.output_dir = r"F:\AI\ComfyUI_Mie_V7.0\comfyui\output"
         
-        # memreduct路径配置
-        self.memreduct_path = r"C:\Program Files\Mem Reduct\memreduct.exe"
-        self.memreduct_available = os.path.exists(self.memreduct_path)
-        
-        if self.memreduct_available:
-            print(f"✅ 检测到Mem Reduct: {self.memreduct_path}")
-        else:
-            print(f"⚠️  Mem Reduct未找到: {self.memreduct_path}")
-        
         # 创建日志文件
-        self.log_file = os.path.join(self.comfyui_path, "batch_processing_v25.log")
+        self.log_file = os.path.join(self.comfyui_path, "batch_processing_v25_1.log")
         
         # 状态监控相关
         self.server_check_interval = 5  # 服务器检查间隔（秒）
@@ -461,19 +452,19 @@ class ComfyUI_FlashVSR_BatchProcessor:
     
     def clean_memory(self):
         """
-        使用Mem Reduct清理内存
-        即使执行失败或超时，也继续执行后续操作
+        使用系统命令清理内存
+        不再检查特定工具路径，直接执行memreduct命令
         """
-        if not self.clean_memory_enabled or not self.memreduct_available:
-            print("ℹ️ 内存清理功能已禁用或Mem Reduct不可用")
+        if not self.clean_memory_enabled:
+            print("ℹ️ 内存清理功能已禁用")
             return True
         
         print(f"🧹 正在执行内存清理 (超时: {self.memreduct_timeout}秒)")
         
         try:
-            # 启动Mem Reduct清理
+            # 直接调用memreduct命令，假设已在系统PATH中
             process = subprocess.Popen(
-                [self.memreduct_path, "--clean:full"],
+                ["memreduct", "--clean:full"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 creationflags=subprocess.CREATE_NO_WINDOW
@@ -494,6 +485,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
                         return True
                     else:
                         print(f"⚠️ 内存清理返回非零退出码: {poll_result}")
+                        # 继续执行，不因清理失败而中断主流程
                         return False
                 
                 # 显示进度
@@ -512,10 +504,15 @@ class ComfyUI_FlashVSR_BatchProcessor:
                 except:
                     pass
             
+            # 即使超时也继续执行，不中断主流程
             return False
             
+        except FileNotFoundError:
+            print("⚠️ memreduct命令未找到，请确保memreduct已在系统PATH中")
+            return False
         except Exception as e:
             print(f"⚠️ 执行内存清理时出错: {e}")
+            # 继续执行，不因清理失败而中断主流程
             return False
     
     def clean_output_files(self, video_path: str):
@@ -915,12 +912,13 @@ class ComfyUI_FlashVSR_BatchProcessor:
                 print(f"✅ 视频 {video_name} 处理成功")
                 
                 # 4. 执行内存清理（成功时才执行）
-                print("🧹 任务成功，执行内存清理...")
-                memory_clean_success = self.clean_memory()
-                if memory_clean_success:
-                    print("✅ 内存清理成功")
-                else:
-                    print("⚠️ 内存清理失败或超时，继续下一个任务")
+                if self.clean_memory_enabled:
+                    print("🧹 任务成功，执行内存清理...")
+                    memory_clean_success = self.clean_memory()
+                    if memory_clean_success:
+                        print("✅ 内存清理成功")
+                    else:
+                        print("⚠️ 内存清理失败或超时，继续下一个任务")
                 
                 output_files = self.get_output_files(current_prompt_id)
                 if output_files:
@@ -988,7 +986,7 @@ class ComfyUI_FlashVSR_BatchProcessor:
         print(f"💾 输出目录: {self.output_dir}")
         print(f"📋 工作流模板: {workflow_template_path}")
         print(f"⏱️  动态超时因子: {self.monitor_timeout_factor} × frames_per_batch")
-        print(f"🧹 内存清理: {'启用' if self.memreduct_available else '禁用'}")
+        print(f"🧹 内存清理: {'启用' if self.clean_memory_enabled else '禁用'}")
         
         for i, video_path in enumerate(video_files, 1):
             print(f"\n📊 进度: {i}/{total_videos}")
@@ -1074,10 +1072,10 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description='ComfyUI FlashVSR 批量视频处理工具 - 增强任务监控版 v25',
+        description='ComfyUI FlashVSR 批量视频处理工具 - 增强任务监控版 v25.1',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-主要改进 v25:
+主要改进 v25.1:
 1. ComfyUI状态监控改进:
    - 当API服务不可用时，不是立即判定失败
    - 每5秒检查一次服务器状态
@@ -1089,7 +1087,7 @@ def main():
    - 每5秒检查一次清理进程状态
    - 超时300秒，超时后强制终止清理进程
    - 即使清理失败或超时，也继续下一个任务
-   - 自动检测Mem Reduct路径
+   - 简化内存清理，直接调用系统命令
 
 使用示例:
   # 处理单个视频文件，使用GPU 0
@@ -1107,7 +1105,6 @@ def main():
 参数说明:
   --frames-per-batch: 每批处理的帧数，影响超时时间计算（超时=帧数×2秒）
   --monitor-timeout-factor: 超时因子，默认2（超时时间=帧数×因子）
-  --memreduct-path: Mem Reduct路径，默认C:\Program Files\Mem Reduct\memreduct.exe
         """
     )
     
@@ -1146,9 +1143,6 @@ def main():
                        help='服务器检查间隔 (秒, 默认: 5)')
     
     # 内存清理参数
-    parser.add_argument('--memreduct-path', type=str, 
-                       default=r'C:\Program Files\Mem Reduct\memreduct.exe',
-                       help='Mem Reduct可执行文件路径 (默认: C:\Program Files\Mem Reduct\memreduct.exe)')
     parser.add_argument('--no-memory-clean', action='store_true',
                        help='禁用内存清理功能')
     parser.add_argument('--memreduct-timeout', type=int, default=300,
@@ -1221,7 +1215,6 @@ def main():
         print(f"🧹 内存清理: 已禁用")
     else:
         print(f"🧹 内存清理: 已启用")
-        print(f"  memreduct_path: {args.memreduct_path}")
         print(f"  memreduct_timeout: {args.memreduct_timeout}秒")
         print(f"  memreduct_check_interval: {args.memreduct_check_interval}秒")
     
@@ -1231,10 +1224,6 @@ def main():
     # 配置处理器参数
     processor.server_check_interval = args.check_interval
     processor.monitor_timeout_factor = args.monitor_timeout_factor
-    
-    if args.memreduct_path:
-        processor.memreduct_path = args.memreduct_path
-        processor.memreduct_available = os.path.exists(args.memreduct_path)
     
     processor.clean_memory_enabled = not args.no_memory_clean
     processor.memreduct_timeout = args.memreduct_timeout
