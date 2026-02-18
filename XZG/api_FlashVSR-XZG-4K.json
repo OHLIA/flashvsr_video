@@ -1,0 +1,184 @@
+{
+  "801": {
+    "inputs": {
+      "aspect_ratio": "original",
+      "proportional_width": 1,
+      "proportional_height": 1,
+      "fit": "fill",
+      "method": "lanczos",
+      "round_to_multiple": "128",
+      "scale_to_side": "longest",
+      "scale_to_length": 1920,
+      "background_color": "#000000",
+      "image": [
+        "816",
+        0
+      ]
+    },
+    "class_type": "LayerUtility: ImageScaleByAspectRatio V2",
+    "_meta": {
+      "title": "按宽高比缩放_V2"
+    }
+  },
+  "802": {
+    "inputs": {
+      "batch_index": 0,
+      "length": 1,
+      "image": [
+        "816",
+        0
+      ]
+    },
+    "class_type": "ImageFromBatch",
+    "_meta": {
+      "title": "从批次获取图像"
+    }
+  },
+  "803": {
+    "inputs": {
+      "image": [
+        "802",
+        0
+      ]
+    },
+    "class_type": "easy imageSize",
+    "_meta": {
+      "title": "图像尺寸"
+    }
+  },
+  "804": {
+    "inputs": {
+      "width": [
+        "801",
+        3
+      ],
+      "height": [
+        "801",
+        4
+      ],
+      "seed": 1049529447,
+      "scale": 2,
+      "kv_ratio": 3.5,
+      "local_range": 11,
+      "steps": 1,
+      "cfg": 1,
+      "sparse_ratio": 2,
+      "full_tiled": true,
+      "color_fix": true,
+      "fix_method": "wavelet",
+      "split_num": 81,
+      "model": [
+        "808",
+        0
+      ],
+      "image": [
+        "801",
+        0
+      ]
+    },
+    "class_type": "FlashVSR_SM_KSampler",
+    "_meta": {
+      "title": "FlashVSR_SM_KSampler"
+    }
+  },
+  "808": {
+    "inputs": {
+      "dit": "diffusion_pytorch_model_streaming_dmd_1.1.safetensors",
+      "proj_pt": "LQ_proj_in.ckpt",
+      "emb_pt": "posi_prompt.pth",
+      "vae": "Wan2.1_VAE.pth",
+      "tcd_encoder": "TCDecoder.ckpt",
+      "tiny_long": true,
+      "decode_vae": "Wan2.1_VAE_upscale2x_imageonly_real_v1_diff.safetensors",
+      "version": "1.1"
+    },
+    "class_type": "FlashVSR_SM_Model",
+    "_meta": {
+      "title": "FlashVSR_SM_Model"
+    }
+  },
+  "809": {
+    "inputs": {
+      "aspect_ratio": "custom",
+      "proportional_width": [
+        "803",
+        0
+      ],
+      "proportional_height": [
+        "803",
+        1
+      ],
+      "fit": "fill",
+      "method": "lanczos",
+      "round_to_multiple": "None",
+      "scale_to_side": "longest",
+      "scale_to_length": 3840,
+      "background_color": "#000000",
+      "image": [
+        "804",
+        0
+      ]
+    },
+    "class_type": "LayerUtility: ImageScaleByAspectRatio V2",
+    "_meta": {
+      "title": "按宽高比缩放_V2"
+    }
+  },
+  "812": {
+    "inputs": {
+      "video_info": [
+        "816",
+        3
+      ]
+    },
+    "class_type": "VHS_VideoInfoLoaded",
+    "_meta": {
+      "title": "视频信息（已选中）"
+    }
+  },
+  "816": {
+    "inputs": {
+      "video": "{{VIDEO_PATH}}",
+      "force_rate": "{{VIDEO_FPS}}",
+      "custom_width": 0,
+      "custom_height": 0,
+      "frame_load_cap": "{{FRAMES_PER_BATCH}}",
+      "skip_first_frames": "{{FRAMES_SKIP}}",
+      "select_every_nth": 1,
+      "format": "AnimateDiff"
+    },
+    "class_type": "VHS_LoadVideo",
+    "_meta": {
+      "title": "加载视频"
+    }
+  },
+  "817": {
+    "inputs": {
+      "frame_rate": [
+        "812",
+        0
+      ],
+      "loop_count": 0,
+      "filename_prefix": "{{OUTPUT_PREFIX}}",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 19,
+      "save_metadata": false,
+      "trim_to_audio": false,
+      "pingpong": false,
+      "save_output": true,
+      "images": [
+        "809",
+        0
+      ],
+      "audio": [
+        "816",
+        2
+      ]
+    },
+    "class_type": "VHS_VideoCombine",
+    "_meta": {
+      "title": "合并为视频"
+    }
+  }
+}
