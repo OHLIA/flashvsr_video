@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ComfyUI FlashVSR-XZG 批量视频处理脚本
+ComfyUI FlashVSR-XZG 批量视频处理脚本（增强版）
 配合 FlashVSR-XZG.json 工作流模板使用
-版本: 1.0
+支持断点续跑和已处理帧数跟踪
+版本: 2.0
 """
 
 import json
@@ -33,7 +34,7 @@ except ImportError:
 class FlashVSR_XZG_Processor:
     def __init__(self, comfyui_url: str = "http://127.0.0.1:8188", log_dir: str = "."):
         """
-        初始化 ComfyUI FlashVSR-XZG 处理器
+        初始化 ComfyUI FlashVSR-XZG 处理器（增强版）
         
         参数:
             comfyui_url: ComfyUI 服务器地址
@@ -56,16 +57,20 @@ class FlashVSR_XZG_Processor:
         # 初始化日志
         self._init_log_file()
         
-        self.log("📱 初始化 FlashVSR-XZG 处理器")
+        self.log("📱 初始化 FlashVSR-XZG 处理器（增强版）")
         self.log(f"🔗 ComfyUI 地址: {self.comfyui_url}")
         self.log(f"📝 日志文件: {self.log_file}")
+        
+        # 状态跟踪（用于断点续跑）
+        self.processing_state = {}
     
     def _init_log_file(self):
         """初始化日志文件"""
         with open(self.log_file, 'a', encoding='utf-8') as f:
             f.write(f"{'='*80}\n")
-            f.write(f"FlashVSR-XZG 处理日志\n")
+            f.write(f"FlashVSR-XZG 处理日志（增强版）\n")
             f.write(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"支持功能: 断点续跑、已处理帧数跟踪、批次号连续\n")
             f.write(f"{'='*80}\n\n")
     
     def log(self, message: str, level: str = "INFO"):
@@ -192,10 +197,12 @@ class FlashVSR_XZG_Processor:
         frames_skip: int,
         output_prefix: str,
         batch_number: int = 1,
-        total_batches: int = 1
+        total_batches: int = 1,
+        frames_pre: int = 0,
+        batch_pre: int = 0
     ) -> Dict:
         """
-        更新工作流参数
+        更新工作流参数（增强版）
         
         参数:
             workflow: 工作流模板
@@ -204,8 +211,10 @@ class FlashVSR_XZG_Processor:
             frames_per_batch: 每批帧数
             frames_skip: 跳过帧数
             output_prefix: 输出前缀
-            batch_number: 批次号
+            batch_number: 当前任务批次号
             total_batches: 总批次数
+            frames_pre: 已跑帧数
+            batch_pre: 已跑批次
             
         返回:
             更新后的工作流
@@ -214,6 +223,10 @@ class FlashVSR_XZG_Processor:
         modified_workflow = json.loads(json.dumps(workflow))
         
         self.log(f"🔄 更新工作流参数 (批次 {batch_number}/{total_batches})", "INFO")
+        if frames_pre > 0:
+            self.log(f"  ⏭️  已跑帧数: {frames_pre} 帧", "INFO")
+        if batch_pre > 0:
+            self.log(f"  📦 已跑批次: {batch_pre} 批", "INFO")
         
         # 更新所有节点参数
         for node_id, node_data in modified_workflow.items():
@@ -236,10 +249,16 @@ class FlashVSR_XZG_Processor:
                     inputs["frame_load_cap"] = str(frames_per_batch)
                     self.log(f"  ✅ 设置每批帧数: {frames_per_batch}", "INFO")
                 
-                # 更新跳过帧数
+                # 更新跳过帧数（增强版逻辑）
                 if isinstance(inputs.get("skip_first_frames"), str) and "{{FRAMES_SKIP}}" in inputs["skip_first_frames"]:
                     inputs["skip_first_frames"] = str(frames_skip)
                     self.log(f"  ✅ 设置跳过帧数: {frames_skip}", "INFO")
+                
+                # 新增：已跑帧数参数（如果模板支持）
+                if isinstance(inputs.get("skip_first_frames"), str) and "{{FRAMS_PRE}}" in inputs["skip_first_frames"]:
+                    # 注意：这里假设模板中可能有 {{FRAMS_PRE}} 占位符
+                    # 实际使用中可能不需要这个占位符，因为 FRAMES_SKIP 已经包含了已跑帧数
+                    self.log(f"  ℹ️  检测到 {{FRAMS_PRE}} 占位符，将使用 frames_skip 替代", "INFO")
             
             # 更新 VHS_VideoCombine 节点 (ID 817)
             elif node_data.get("class_type") == "VHS_VideoCombine":
@@ -371,19 +390,23 @@ class FlashVSR_XZG_Processor:
         batch_number: int,
         total_batches: int,
         base_output_prefix: str,
+        frames_pre: int = 0,
+        batch_pre: int = 0,
         timeout: int = 600
     ) -> Tuple[bool, Optional[str]]:
         """
-        处理单个视频批次
+        处理单个视频批次（增强版）
         
         参数:
             workflow_template: 工作流模板
             video_path: 视频路径
             video_fps: 视频帧率
             frames_per_batch: 每批帧数
-            batch_number: 批次号
+            batch_number: 当前任务批次号
             total_batches: 总批次数
             base_output_prefix: 基础输出前缀
+            frames_pre: 已跑帧数
+            batch_pre: 已跑批次
             timeout: 超时时间（秒）
             
         返回:
@@ -391,20 +414,28 @@ class FlashVSR_XZG_Processor:
         """
         video_name = os.path.splitext(os.path.basename(video_path))[0]
         
-        # 计算跳过帧数
-        frames_skip = frames_per_batch * (batch_number - 1)
+        # 增强版：计算跳过帧数
+        # {{FRAMES_SKIP}} = {{FRAMS_PRE}} + frames_per_batch * (batch_number - 1)
+        frames_skip = frames_pre + frames_per_batch * (batch_number - 1)
         
-        # 生成输出前缀
-        output_prefix = f"{base_output_prefix}_{batch_number:03d}"
+        # 增强版：计算当前总批次号
+        # 当前批次号 = 已跑批次 + 当前任务批次号
+        current_batch_number = batch_pre + batch_number
         
-        self.log(f"🎬 处理批次 {batch_number}/{total_batches}", "INFO")
+        # 增强版：生成输出前缀
+        # flashvsr_{源文件名}_{ {{BATCH_PRE}} + 当前任务的批次号}
+        output_prefix = f"{base_output_prefix}_{current_batch_number:03d}"
+        
+        self.log(f"🎬 处理批次 {batch_number}/{total_batches} (总批次: {current_batch_number})", "INFO")
         self.log(f"  📂 视频: {video_name}", "INFO")
         self.log(f"  ⏱️  帧率: {video_fps:.2f}", "INFO")
         self.log(f"  🎞️  每批帧数: {frames_per_batch}", "INFO")
-        self.log(f"  ⏭️  跳过帧数: {frames_skip}", "INFO")
+        self.log(f"  ⏭️  跳过帧数: {frames_skip} (已跑 {frames_pre} + 当前跳过 {frames_per_batch*(batch_number-1)})", "INFO")
         self.log(f"  📁 输出前缀: {output_prefix}", "INFO")
+        if frames_pre > 0:
+            self.log(f"  📊 断点续跑: 已处理 {frames_pre} 帧 ({batch_pre} 批)", "INFO")
         
-        # 更新工作流参数
+        # 更新工作流参数（增强版）
         workflow = self.update_workflow_parameters(
             workflow_template,
             video_path,
@@ -413,7 +444,9 @@ class FlashVSR_XZG_Processor:
             frames_skip,
             output_prefix,
             batch_number,
-            total_batches
+            total_batches,
+            frames_pre,
+            batch_pre
         )
         
         # 提交任务
@@ -426,9 +459,9 @@ class FlashVSR_XZG_Processor:
         success = self.wait_for_task_completion(prompt_id, timeout=timeout)
         
         if success:
-            self.log(f"✅ 批次 {batch_number} 处理完成", "INFO")
+            self.log(f"✅ 批次 {batch_number} 处理完成 (总批次: {current_batch_number})", "INFO")
         else:
-            self.log(f"❌ 批次 {batch_number} 处理失败", "ERROR")
+            self.log(f"❌ 批次 {batch_number} 处理失败 (总批次: {current_batch_number})", "ERROR")
         
         return success, prompt_id
     
@@ -437,16 +470,20 @@ class FlashVSR_XZG_Processor:
         workflow_template_path: str,
         video_path: str,
         frames_per_batch: int = 50,
-        timeout_per_batch: int = 600
+        timeout_per_batch: int = 600,
+        frames_pre: int = 0,
+        batch_pre: int = 0
     ) -> Dict:
         """
-        处理单个视频文件
+        处理单个视频文件（增强版）
         
         参数:
             workflow_template_path: 工作流模板路径
             video_path: 视频文件路径
             frames_per_batch: 每批帧数
             timeout_per_batch: 每批超时时间（秒）
+            frames_pre: 已跑帧数
+            batch_pre: 已跑批次
             
         返回:
             处理结果字典
@@ -454,6 +491,10 @@ class FlashVSR_XZG_Processor:
         video_name = os.path.basename(video_path)
         self.log(f"🎬 开始处理视频: {video_name}", "INFO")
         self.log(f"📂 路径: {video_path}", "INFO")
+        
+        # 检查断点续跑参数
+        if frames_pre > 0:
+            self.log(f"🔄 断点续跑模式: 已处理 {frames_pre} 帧, {batch_pre} 批", "INFO")
         
         # 加载工作流模板
         try:
@@ -473,12 +514,33 @@ class FlashVSR_XZG_Processor:
         video_fps, total_frames, method = self.get_video_info(video_path)
         self.log(f"📊 视频信息: {total_frames} 帧, {video_fps:.2f} FPS (方法: {method})", "INFO")
         
-        # 计算批次数
-        total_batches = total_frames // frames_per_batch
-        if total_frames % frames_per_batch > 0:
+        # 增强版：计算剩余可处理帧数
+        remaining_frames = total_frames - frames_pre
+        if remaining_frames <= 0:
+            self.log(f"✅ 视频已全部处理完成，无需继续处理", "INFO")
+            return {
+                "video": video_name,
+                "path": video_path,
+                "success": True,
+                "batches_processed": 0,
+                "total_batches": 0,
+                "video_fps": video_fps,
+                "total_frames": total_frames,
+                "remaining_frames": 0,
+                "frames_pre": frames_pre,
+                "batch_pre": batch_pre,
+                "success_rate": "100%",
+                "results": []
+            }
+        
+        # 增强版：计算批次数
+        # (总帧数 - {{FRAMS_PRE}}) / frames_per_batch
+        total_batches = remaining_frames // frames_per_batch
+        if remaining_frames % frames_per_batch > 0:
             total_batches += 1
         
-        self.log(f"📦 批次计算: {total_frames} 帧 / {frames_per_batch} 帧每批 = {total_batches} 批", "INFO")
+        self.log(f"📦 批次计算: {remaining_frames} 剩余帧 / {frames_per_batch} 帧每批 = {total_batches} 批", "INFO")
+        self.log(f"📈 进度: {frames_pre}/{total_frames} 帧 ({frames_pre/total_frames*100:.1f}%)", "INFO")
         
         # 基础输出前缀
         video_base_name = os.path.splitext(video_name)[0]
@@ -498,13 +560,17 @@ class FlashVSR_XZG_Processor:
                 batch_number,
                 total_batches,
                 base_output_prefix,
+                frames_pre,
+                batch_pre,
                 timeout=timeout_per_batch
             )
             
             results.append({
                 "batch": batch_number,
+                "total_batch": batch_pre + batch_number,
                 "success": success,
-                "prompt_id": prompt_id
+                "prompt_id": prompt_id,
+                "frames_skip": frames_pre + frames_per_batch * (batch_number - 1)
             })
             
             if success:
@@ -525,14 +591,24 @@ class FlashVSR_XZG_Processor:
             "total_batches": total_batches,
             "video_fps": video_fps,
             "total_frames": total_frames,
+            "remaining_frames": remaining_frames,
             "frames_per_batch": frames_per_batch,
+            "frames_pre": frames_pre,
+            "batch_pre": batch_pre,
             "success_rate": f"{success_count}/{total_batches} ({success_count/total_batches*100:.1f}%)",
+            "progress": f"{frames_pre}/{total_frames} ({frames_pre/total_frames*100:.1f}%)",
             "results": results
         }
         
         self.log(f"{'='*60}", "INFO")
         if all_success:
-            self.log(f"✅ 视频 {video_name} 全部批次处理完成 ({success_count}/{total_batches})", "INFO")
+            processed_frames = frames_pre + success_count * frames_per_batch
+            if processed_frames > total_frames:
+                processed_frames = total_frames
+            progress_percent = processed_frames / total_frames * 100
+            self.log(f"✅ 视频 {video_name} 当前阶段处理完成", "INFO")
+            self.log(f"📊 累计进度: {processed_frames}/{total_frames} 帧 ({progress_percent:.1f}%)", "INFO")
+            self.log(f"📦 累计批次: {batch_pre + success_count} 批", "INFO")
         else:
             self.log(f"⚠️ 视频 {video_name} 部分批次失败 ({success_count}/{total_batches})", "WARN")
         
@@ -579,11 +655,18 @@ class FlashVSR_XZG_Processor:
             self.log(f"\n{'#'*80}", "INFO")
             self.log(f"📊 进度: {i}/{len(video_files)}", "INFO")
             
+            # 这里可以扩展以支持从状态文件读取断点信息
+            # 例如：读取 frames_pre 和 batch_pre 从状态文件
+            frames_pre = 0
+            batch_pre = 0
+            
             result = self.process_video_file(
                 workflow_template_path,
                 video_path,
                 frames_per_batch,
-                timeout_per_batch
+                timeout_per_batch,
+                frames_pre,
+                batch_pre
             )
             
             all_results.append(result)
@@ -649,14 +732,17 @@ class FlashVSR_XZG_Processor:
         return video_files
 
 def main():
-    """主函数"""
+    """主函数（增强版）"""
     parser = argparse.ArgumentParser(
-        description='ComfyUI FlashVSR-XZG 批量视频处理脚本',
+        description='ComfyUI FlashVSR-XZG 批量视频处理脚本（增强版）',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
-  # 处理单个视频文件
+  # 处理单个视频文件（从头开始）
   python flashvsr_xzg.py -i video.mp4 --template FlashVSR-XZG.json
+  
+  # 处理单个视频文件（断点续跑，已处理 100 帧，3 批）
+  python flashvsr_xzg.py -i video.mp4 --template FlashVSR-XZG.json --frames-pre 100 --batch-pre 3
   
   # 处理目录下的所有视频文件
   python flashvsr_xzg.py -i ./videos --template FlashVSR-XZG.json
@@ -672,8 +758,9 @@ def main():
 
 注意:
   1. 脚本使用 pymediainfo 获取视频信息，请确保已安装
-  2. 工作流模板中的占位符会被自动替换
-  3. 日志文件保存在当前目录
+  2. 支持断点续跑功能，可指定已处理帧数和批次
+  3. 工作流模板中的占位符会被自动替换
+  4. 日志文件保存在当前目录
         """
     )
     
@@ -686,6 +773,12 @@ def main():
                        help='工作流模板 JSON 文件路径 (默认: FlashVSR-XZG.json)')
     parser.add_argument('--frames-per-batch', type=int, default=50,
                        help='每批处理的帧数 (默认: 50)')
+    
+    # 增强版：断点续跑参数
+    parser.add_argument('--frames-pre', type=int, default=0,
+                       help='已处理的帧数（断点续跑用）(默认: 0)')
+    parser.add_argument('--batch-pre', type=int, default=0,
+                       help='已处理的批次（断点续跑用）(默认: 0)')
     
     # 处理参数
     parser.add_argument('--timeout', type=int, default=600,
@@ -702,6 +795,8 @@ def main():
                        help='日志目录 (默认: 当前目录)')
     parser.add_argument('--skip-pymedia-check', action='store_true',
                        help='跳过 pymediainfo 检查')
+    parser.add_argument('--save-state', action='store_true',
+                       help='保存处理状态，便于断点续跑')
     
     args = parser.parse_args()
     
@@ -723,6 +818,14 @@ def main():
         print(f"❌ 工作流模板不存在: {args.template}")
         return
     
+    # 验证断点参数
+    if args.frames_pre < 0:
+        print(f"❌ 已处理帧数不能为负数: {args.frames_pre}")
+        return
+    if args.batch_pre < 0:
+        print(f"❌ 已处理批次不能为负数: {args.batch_pre}")
+        return
+    
     # 初始化处理器
     processor = FlashVSR_XZG_Processor(
         comfyui_url=args.server,
@@ -734,11 +837,13 @@ def main():
         processor.log("❌ ComfyUI 服务不可用，请确保 ComfyUI 已启动", "ERROR")
         return
     
-    processor.log(f"🚀 开始处理", "INFO")
+    processor.log(f"🚀 开始处理（增强版）", "INFO")
     processor.log(f"📂 输入路径: {args.input}", "INFO")
     processor.log(f"📄 工作流模板: {args.template}", "INFO")
     processor.log(f"🎞️  每批帧数: {args.frames_per_batch}", "INFO")
     processor.log(f"⏱️  超时时间: {args.timeout}秒", "INFO")
+    if args.frames_pre > 0:
+        processor.log(f"🔄 断点续跑模式: 已处理 {args.frames_pre} 帧, {args.batch_pre} 批", "INFO")
     
     start_time = time.time()
     
@@ -750,7 +855,9 @@ def main():
             args.template,
             args.input,
             args.frames_per_batch,
-            args.timeout
+            args.timeout,
+            args.frames_pre,
+            args.batch_pre
         )
         
         results = [result]
@@ -789,12 +896,20 @@ def main():
     total_batches = sum(r["total_batches"] for r in results)
     success_batches = sum(r["batches_processed"] for r in results)
     
+    # 计算总处理帧数
+    total_frames_processed = 0
+    for result in results:
+        if result["success"]:
+            processed = result.get("frames_pre", 0) + result["batches_processed"] * result["frames_per_batch"]
+            total_frames_processed += processed
+    
     processor.log(f"⏱️  总耗时: {total_time:.2f}秒 ({total_time/60:.1f}分钟)", "INFO")
     processor.log(f"📁 总视频数: {total_videos}", "INFO")
     processor.log(f"✅ 成功视频: {success_videos}", "INFO")
     processor.log(f"❌ 失败视频: {failed_videos}", "INFO" if failed_videos == 0 else "ERROR")
     processor.log(f"📦 总批次: {total_batches}", "INFO")
     processor.log(f"✅ 成功批次: {success_batches} ({success_batches/total_batches*100:.1f}%)", "INFO")
+    processor.log(f"🎞️  总处理帧数: {total_frames_processed}", "INFO")
     
     # 输出失败详情
     if failed_videos > 0:
