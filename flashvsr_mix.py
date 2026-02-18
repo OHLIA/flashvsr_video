@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 ComfyUI FlashVSR-XZG 高级批量视频处理脚本（混合版）
-专为 api_flashvsr_mix.json 工作流模板设计
-版本: 1.2
-修复tiled_dit变量名错误问题
+兼容多种 API 模板，包括 api_flashvsr_mix.json 和 api_flashvsr_mix_4K.json
+版本: 2.0
+增强模板兼容性和输出文件处理
 """
 
 import json
@@ -61,7 +61,7 @@ class FlashVSR_XZG_MIX_Processor:
         # 初始化日志
         self._init_log_file()
         
-        self.log("📱 初始化 FlashVSR-XZG MIX 处理器 v1.2", "INFO")
+        self.log("📱 初始化 FlashVSR-XZG MIX 处理器 v2.0", "INFO")
         self.log(f"🔗 ComfyUI 地址: {self.comfyui_url}", "INFO")
         self.log(f"📝 日志文件: {self.log_file}", "INFO")
         self.log(f"💾 状态目录: {self.state_dir}", "INFO")
@@ -73,14 +73,14 @@ class FlashVSR_XZG_MIX_Processor:
         """初始化日志文件"""
         with open(self.log_file, 'a', encoding='utf-8') as f:
             f.write(f"{'='*80}\n")
-            f.write(f"FlashVSR-XZG MIX 处理日志 v1.2\n")
+            f.write(f"FlashVSR-XZG MIX 处理日志 v2.0\n")
             f.write(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"工作流模板: api_flashvsr_mix.json\n")
+            f.write(f"工作流模板: 兼容多种 API 模板\n")
             f.write(f"{'='*80}\n\n")
     
     def log(self, message: str, level: str = "INFO"):
         """
-        记录日志（改进格式，与flashvsr_xzg.py保持一致）
+        记录日志（简化输出格式）
         
         参数:
             message: 日志消息
@@ -305,6 +305,31 @@ class FlashVSR_XZG_MIX_Processor:
             self.log(f"加载工作流模板失败: {e}", "ERROR")
             raise
     
+    def get_template_parameter_value(self, inputs: Dict, param_key: str, param_value: any) -> any:
+        """
+        智能获取模板参数值
+        
+        参数:
+            inputs: 节点输入参数
+            param_key: 参数键
+            param_value: 脚本传递的参数值
+            
+        返回:
+            应该设置到工作流的参数值
+        """
+        # 如果参数不在输入中，返回脚本传递的值
+        if param_key not in inputs:
+            return param_value
+        
+        current_value = inputs.get(param_key)
+        
+        # 如果是占位符格式，替换为脚本传递的值
+        if isinstance(current_value, str) and current_value.startswith("{{") and current_value.endswith("}}"):
+            return param_value
+        
+        # 如果已经是固定值（不是占位符），保持原值
+        return current_value
+    
     def update_workflow_parameters(
         self, 
         workflow: Dict, 
@@ -314,12 +339,12 @@ class FlashVSR_XZG_MIX_Processor:
         frames_skip: int,
         output_prefix: str,
         attn_mode: str = "block_sparse_attention",
-        tiled_dit: bool = False,  # 修复：改为 bool 类型
+        tiled_dit: bool = False,
         tile_size: int = 256,
         tile_overlap: int = 24,
         scale: int = 2,
-        in_width: int = 768,
-        out_width: int = 3072,
+        in_width: Optional[int] = None,  # 改为可选参数
+        out_width: Optional[int] = None,  # 改为可选参数
         batch_number: int = 1,
         total_batches: int = 1,
         frames_pre: int = 0,
@@ -327,7 +352,7 @@ class FlashVSR_XZG_MIX_Processor:
         gpu_device: str = "auto"
     ) -> Dict:
         """
-        更新工作流参数（针对 api_flashvsr_mix.json）
+        更新工作流参数（兼容多种 API 模板）
         
         参数:
             workflow: 工作流模板
@@ -341,8 +366,8 @@ class FlashVSR_XZG_MIX_Processor:
             tile_size: 分块大小
             tile_overlap: 分块重叠
             scale: 放大倍数
-            in_width: 输入宽度（128对齐）
-            out_width: 输出宽度（128对齐）
+            in_width: 输入宽度（可选，如果模板有占位符则使用）
+            out_width: 输出宽度（可选，如果模板有占位符则使用）
             batch_number: 当前任务批次号
             total_batches: 总批次数
             frames_pre: 已跑帧数
@@ -368,129 +393,52 @@ class FlashVSR_XZG_MIX_Processor:
             
             # 1. VHS_LoadVideo 节点 (ID 25)
             if node_class == "VHS_LoadVideo":
-                # 更新视频路径
-                if isinstance(inputs.get("video"), str) and "{{VIDEO_PATH}}" in inputs["video"]:
-                    inputs["video"] = video_path
-                    self.log(f"  ✅ 设置视频路径: {video_path}", "INFO")
-                
-                # 更新帧率
-                if isinstance(inputs.get("force_rate"), str) and "{{VIDEO_FPS}}" in inputs["force_rate"]:
-                    inputs["force_rate"] = str(video_fps)
-                    self.log(f"  ✅ 设置帧率: {video_fps}", "INFO")
-                
-                # 更新每批帧数
-                if isinstance(inputs.get("frame_load_cap"), str) and "{{FRAMES_PER_BATCH}}" in inputs["frame_load_cap"]:
-                    inputs["frame_load_cap"] = str(frames_per_batch)
-                    self.log(f"  ✅ 设置每批帧数: {frames_per_batch}", "INFO")
-                
-                # 更新跳过帧数
-                if isinstance(inputs.get("skip_first_frames"), str) and "{{FRAMES_SKIP}}" in inputs["skip_first_frames"]:
-                    inputs["skip_first_frames"] = str(frames_skip)
-                    self.log(f"  ✅ 设置跳过帧数: {frames_skip}", "INFO")
+                # 使用智能参数替换
+                inputs["video"] = self.get_template_parameter_value(inputs, "video", video_path)
+                inputs["force_rate"] = self.get_template_parameter_value(inputs, "force_rate", str(video_fps))
+                inputs["frame_load_cap"] = self.get_template_parameter_value(inputs, "frame_load_cap", str(frames_per_batch))
+                inputs["skip_first_frames"] = self.get_template_parameter_value(inputs, "skip_first_frames", str(frames_skip))
             
             # 2. FlashVSRInitPipe 节点 (ID 29)
             elif node_class == "FlashVSRInitPipe":
-                # 设置GPU设备
-                if isinstance(inputs.get("device"), str) and "{{gpu}}" in inputs["device"]:
-                    if gpu_device == "auto":
-                        device_value = "auto"
-                    elif gpu_device.isdigit():
-                        device_value = f"cuda:{gpu_device}"
-                    else:
-                        device_value = gpu_device
-                    inputs["device"] = device_value
-                    self.log(f"  ✅ 设置GPU设备: {device_value}", "INFO")
-                elif isinstance(inputs.get("device"), str):
-                    if gpu_device.isdigit():
-                        device_value = f"cuda:{gpu_device}"
-                    else:
-                        device_value = gpu_device
-                    inputs["device"] = device_value
-                    self.log(f"  ✅ 设置GPU设备: {device_value} (直接赋值)", "INFO")
+                # 智能设置GPU设备
+                if gpu_device == "auto":
+                    device_value = "auto"
+                elif gpu_device.isdigit():
+                    device_value = f"cuda:{gpu_device}"
+                else:
+                    device_value = gpu_device
                 
-                # 设置稀疏模式
-                if isinstance(inputs.get("attention_mode"), str) and "{{attn_mode}}" in inputs["attention_mode"]:
-                    inputs["attention_mode"] = attn_mode
-                    self.log(f"  ✅ 设置稀疏模式: {attn_mode}", "INFO")
-                elif isinstance(inputs.get("attention_mode"), str):
-                    inputs["attention_mode"] = attn_mode
-                    self.log(f"  ✅ 设置稀疏模式: {attn_mode} (直接赋值)", "INFO")
+                inputs["device"] = self.get_template_parameter_value(inputs, "device", device_value)
+                inputs["attention_mode"] = self.get_template_parameter_value(inputs, "attention_mode", attn_mode)
             
             # 3. FlashVSRNodeAdv 节点 (ID 28)
             elif node_class == "FlashVSRNodeAdv":
-                # 设置缩放比例
-                if isinstance(inputs.get("scale"), str) and "{{scale}}" in inputs["scale"]:
-                    inputs["scale"] = str(scale)
-                    self.log(f"  ✅ 设置缩放比例: {scale}", "INFO")
-                elif isinstance(inputs.get("scale"), (int, float, str)):
-                    try:
-                        inputs["scale"] = int(scale)  # 改为 int 类型
-                        self.log(f"  ✅ 设置缩放比例: {scale} (直接赋值，转为整型)", "INFO")
-                    except:
-                        pass
-                
-                # 设置分块开关 - 修复：正确处理布尔值
-                if "tiled_dit" in inputs:
-                    # 直接赋布尔值
-                    inputs["tiled_dit"] = tiled_dit  
-                    self.log(f"  ✅ 设置分块开关: {tiled_dit} (原始值: {tiled_dit})", "INFO")
-                
-                # 设置分块大小
-                if isinstance(inputs.get("tile_size"), str) and "{{t_z}}" in inputs["tile_size"]:
-                    inputs["tile_size"] = str(tile_size)
-                    self.log(f"  ✅ 设置分块大小: {tile_size}", "INFO")
-                elif isinstance(inputs.get("tile_size"), (int, float, str)):
-                    try:
-                        inputs["tile_size"] = int(tile_size)
-                        self.log(f"  ✅ 设置分块大小: {tile_size} (直接赋值)", "INFO")
-                    except:
-                        pass
-                
-                # 设置分块重叠
-                if isinstance(inputs.get("tile_overlap"), str) and "{{t_o}}" in inputs["tile_overlap"]:
-                    inputs["tile_overlap"] = str(tile_overlap)
-                    self.log(f"  ✅ 设置分块重叠: {tile_overlap}", "INFO")
-                elif isinstance(inputs.get("tile_overlap"), (int, float, str)):
-                    try:
-                        inputs["tile_overlap"] = int(tile_overlap)
-                        self.log(f"  ✅ 设置分块重叠: {tile_overlap} (直接赋值)", "INFO")
-                    except:
-                        pass
+                # 智能设置所有参数
+                inputs["scale"] = self.get_template_parameter_value(inputs, "scale", str(scale))
+                inputs["tiled_dit"] = self.get_template_parameter_value(inputs, "tiled_dit", tiled_dit)
+                inputs["tile_size"] = self.get_template_parameter_value(inputs, "tile_size", str(tile_size))
+                inputs["tile_overlap"] = self.get_template_parameter_value(inputs, "tile_overlap", str(tile_overlap))
             
             # 4. 图像缩放节点 - 输入 (ID 26)
             elif node_class == "LayerUtility: ImageScaleByAspectRatio V2" and node_id == "26":
-                # 设置输入宽度
-                if isinstance(inputs.get("scale_to_length"), str) and "{{IN_WIDTH}}" in inputs["scale_to_length"]:
-                    inputs["scale_to_length"] = str(in_width)
-                    self.log(f"  ✅ 设置输入宽度: {in_width}", "INFO")
-                elif isinstance(inputs.get("scale_to_length"), (int, float, str)):
-                    inputs["scale_to_length"] = str(in_width)
-                    self.log(f"  ✅ 设置输入宽度: {in_width} (直接赋值)", "INFO")
+                # 如果提供了in_width，智能设置
+                if in_width is not None:
+                    inputs["scale_to_length"] = self.get_template_parameter_value(inputs, "scale_to_length", str(in_width))
             
             # 5. 图像缩放节点 - 输出 (ID 19)
             elif node_class == "LayerUtility: ImageScaleByAspectRatio V2" and node_id == "19":
-                # 设置输出宽度
-                if isinstance(inputs.get("scale_to_length"), str) and "{{OUT_WIDTH}}" in inputs["scale_to_length"]:
-                    inputs["scale_to_length"] = str(out_width)
-                    self.log(f"  ✅ 设置输出宽度: {out_width}", "INFO")
-                elif isinstance(inputs.get("scale_to_length"), (int, float, str)):
-                    inputs["scale_to_length"] = str(out_width)
-                    self.log(f"  ✅ 设置输出宽度: {out_width} (直接赋值)", "INFO")
+                # 如果提供了out_width，智能设置
+                if out_width is not None:
+                    inputs["scale_to_length"] = self.get_template_parameter_value(inputs, "scale_to_length", str(out_width))
             
             # 6. VHS_VideoCombine 节点 (ID 34)
             elif node_class == "VHS_VideoCombine":
-                # 更新输出前缀
-                if isinstance(inputs.get("filename_prefix"), str) and "{{OUTPUT_PREFIX}}" in inputs["filename_prefix"]:
-                    inputs["filename_prefix"] = output_prefix
-                    self.log(f"  ✅ 设置输出前缀: {output_prefix}", "INFO")
-                elif isinstance(inputs.get("filename_prefix"), str):
-                    inputs["filename_prefix"] = output_prefix
-                    self.log(f"  ✅ 设置输出前缀: {output_prefix} (直接赋值)", "INFO")
+                inputs["filename_prefix"] = self.get_template_parameter_value(inputs, "filename_prefix", output_prefix)
                 
                 # 设置 trim_to_audio 为 false
                 if "trim_to_audio" in inputs:
                     inputs["trim_to_audio"] = False
-                    self.log("  ✅ 设置 trim_to_audio 为 false", "INFO")
         
         return modified_workflow
     
@@ -512,21 +460,23 @@ class FlashVSR_XZG_MIX_Processor:
         try:
             self.log(f"提交任务到 ComfyUI", "INFO")
             
-            # 验证关键参数
-            self.log(f"=== 工作流关键参数验证 ===", "INFO")
-            key_nodes = ["25", "28", "29", "34", "26", "19"]
+            # 简化验证，只记录关键信息
+            self.log(f"关键参数检查:", "INFO")
+            
+            # 只检查必须的节点
+            key_nodes = ["25", "28", "34"]
             for node_id in key_nodes:
                 if node_id in workflow:
                     node_data = workflow[node_id]
                     node_type = node_data.get("class_type", "Unknown")
-                    inputs = node_data.get("inputs", {})
-                    self.log(f"节点 {node_id} ({node_type}):", "INFO")
                     
-                    for key in ["video", "force_rate", "frame_load_cap", "skip_first_frames", 
-                               "device", "attention_mode", "scale", "tiled_dit", "tile_size", 
-                               "tile_overlap", "filename_prefix", "scale_to_length"]:
-                        if key in inputs:
-                            self.log(f"  {key}: {inputs[key]}", "INFO")
+                    if node_id == "25":
+                        self.log(f"  视频加载节点: 帧数 {workflow[node_id]['inputs'].get('frame_load_cap', 'N/A')}, 跳过 {workflow[node_id]['inputs'].get('skip_first_frames', 'N/A')} 帧", "INFO")
+                    elif node_id == "28":
+                        inputs = workflow[node_id]['inputs']
+                        self.log(f"  FlashVSR节点: 缩放 {inputs.get('scale', 'N/A')}, 分块 {'启用' if inputs.get('tiled_dit') else '禁用'}", "INFO")
+                    elif node_id == "34":
+                        self.log(f"  输出文件前缀: {workflow[node_id]['inputs'].get('filename_prefix', 'N/A')}", "INFO")
             
             response = requests.post(
                 self.api_prompt, 
@@ -629,6 +579,42 @@ class FlashVSR_XZG_MIX_Processor:
         self.log(f"任务 {prompt_id} 等待超时 ({timeout}秒)", "ERROR")
         return False
     
+    def find_output_file(self, output_prefix: str, output_dir: str) -> Optional[str]:
+        """
+        智能查找输出文件
+        
+        参数:
+            output_prefix: 输出前缀
+            output_dir: 输出目录
+            
+        返回:
+            找到的输出文件路径，或 None
+        """
+        # 首先查找确切的文件名
+        exact_file = os.path.join(output_dir, f"{output_prefix}.mp4")
+        if os.path.exists(exact_file):
+            return exact_file
+        
+        # 查找带有数字后缀的文件（ComfyUI 默认行为）
+        import glob
+        pattern = os.path.join(output_dir, f"{output_prefix}_*.mp4")
+        matching_files = glob.glob(pattern)
+        
+        if matching_files:
+            # 按修改时间排序，返回最新的
+            matching_files.sort(key=os.path.getmtime, reverse=True)
+            return matching_files[0]
+        
+        # 查找任何以输出前缀开头的文件
+        pattern = os.path.join(output_dir, f"{output_prefix}*.mp4")
+        matching_files = glob.glob(pattern)
+        
+        if matching_files:
+            matching_files.sort(key=os.path.getmtime, reverse=True)
+            return matching_files[0]
+        
+        return None
+    
     def process_single_video_batch(
         self,
         workflow_template: Dict,
@@ -641,7 +627,7 @@ class FlashVSR_XZG_MIX_Processor:
         total_batches: int,
         base_output_prefix: str,
         attn_mode: str = "block_sparse_attention",
-        tiled_dit: bool = False,  # 修复：改为 bool 类型
+        tiled_dit: bool = False,
         tile_size: int = 256,
         tile_overlap: int = 24,
         scale: int = 2,
@@ -700,11 +686,35 @@ class FlashVSR_XZG_MIX_Processor:
         current_batch_number = batch_pre + batch_number
         
         # 生成输出前缀
-        output_prefix = f"{base_output_prefix}_{current_batch_number:03d}"
+        output_prefix = f"{base_output_prefix}_{current_batch_number:03d}_{frames_skip}+{frames_per_batch}"
         
-        # 计算输入和输出宽度（对齐到128）
+        # 计算输入和输出宽度（对齐到128） - 只在模板有占位符时使用
         in_width_aligned = self.calculate_aligned_dimension(video_width, 128)
         out_width_aligned = self.calculate_aligned_dimension(int(video_width * scale), 128)
+        
+        # 智能检查模板，判断是否需要计算尺寸
+        use_calculated_in_width = False
+        use_calculated_out_width = False
+        
+        # 检查节点 26 是否有 {{IN_WIDTH}} 占位符
+        if "26" in workflow_template:
+            node_26_inputs = workflow_template["26"].get("inputs", {})
+            scale_to_length = node_26_inputs.get("scale_to_length", "")
+            if isinstance(scale_to_length, str) and "{{IN_WIDTH}}" in scale_to_length:
+                use_calculated_in_width = True
+                self.log(f"检测到输入宽度占位符，将使用计算值: {in_width_aligned}", "INFO")
+            else:
+                self.log(f"输入宽度已硬编码: {scale_to_length}", "INFO")
+        
+        # 检查节点 19 是否有 {{OUT_WIDTH}} 占位符
+        if "19" in workflow_template:
+            node_19_inputs = workflow_template["19"].get("inputs", {})
+            scale_to_length = node_19_inputs.get("scale_to_length", "")
+            if isinstance(scale_to_length, str) and "{{OUT_WIDTH}}" in scale_to_length:
+                use_calculated_out_width = True
+                self.log(f"检测到输出宽度占位符，将使用计算值: {out_width_aligned}", "INFO")
+            else:
+                self.log(f"输出宽度已硬编码: {scale_to_length}", "INFO")
         
         # 预期输出文件路径
         expected_output_file = os.path.join(output_dir, f"{output_prefix}.mp4")
@@ -713,17 +723,18 @@ class FlashVSR_XZG_MIX_Processor:
         self.log(f"  📂 视频: {video_name}", "INFO")
         self.log(f"  📏 分辨率: {video_width}x{video_height}", "INFO")
         self.log(f"  ⏱️  帧率: {video_fps:.2f}", "INFO")
-        self.log(f"  🎞️  每批帧数: {actual_frames_per_batch} (原: {frames_per_batch})", "INFO")
-        self.log(f"  ⏭️  跳过帧数: {frames_skip} (已跑 {frames_pre} + 当前跳过 {frames_per_batch*(batch_number-1)})", "INFO")
+        self.log(f"  🎞️  每批帧数: {actual_frames_per_batch}", "INFO")
+        self.log(f"  ⏭️  跳过帧数: {frames_skip}", "INFO")
         self.log(f"  📁 输出前缀: {output_prefix}", "INFO")
         self.log(f"  ⚙️  稀疏模式: {attn_mode}", "INFO")
         self.log(f"  🧱 分块开关: {'启用' if tiled_dit else '禁用'}", "INFO")
         self.log(f"  🧩 分块大小: {tile_size}", "INFO")
         self.log(f"  🔗 分块重叠: {tile_overlap}", "INFO")
         self.log(f"  🔍 缩放倍数: {scale}", "INFO")
-        self.log(f"  📏 输入宽度: {video_width} -> {in_width_aligned} (128对齐)", "INFO")
-        self.log(f"  📏 输出宽度: {int(video_width * scale)} -> {out_width_aligned} (128对齐)", "INFO")
-        self.log(f"  📄 预期输出: {expected_output_file}", "INFO")
+        if use_calculated_in_width:
+            self.log(f"  📏 输入宽度: {video_width} -> {in_width_aligned} (128对齐)", "INFO")
+        if use_calculated_out_width:
+            self.log(f"  📏 输出宽度: {int(video_width * scale)} -> {out_width_aligned} (128对齐)", "INFO")
         if frames_pre > 0:
             self.log(f"  📊 断点续跑: 已处理 {frames_pre} 帧 ({batch_pre} 批)", "INFO")
         
@@ -751,8 +762,8 @@ class FlashVSR_XZG_MIX_Processor:
             tile_size=tile_size,
             tile_overlap=tile_overlap,
             scale=scale,
-            in_width=in_width_aligned,
-            out_width=out_width_aligned,
+            in_width=in_width_aligned if use_calculated_in_width else None,
+            out_width=out_width_aligned if use_calculated_out_width else None,
             batch_number=batch_number,
             total_batches=total_batches,
             frames_pre=frames_pre,
@@ -772,23 +783,23 @@ class FlashVSR_XZG_MIX_Processor:
         if success:
             self.log(f"批次 {batch_number} 处理完成 (总批次: {current_batch_number})", "INFO")
             
-            # 检查输出文件
-            if os.path.exists(expected_output_file):
-                file_size_mb = os.path.getsize(expected_output_file) / (1024 * 1024)
-                self.log(f"输出文件生成成功: {expected_output_file} ({file_size_mb:.1f}MB)", "INFO")
-                return success, prompt_id, expected_output_file
+            # 使用智能查找输出文件
+            actual_output = self.find_output_file(output_prefix, output_dir)
+            
+            if actual_output:
+                file_size_mb = os.path.getsize(actual_output) / (1024 * 1024)
+                self.log(f"输出文件生成成功: {actual_output} ({file_size_mb:.1f}MB)", "INFO")
+                
+                # 如果实际文件名与预期不同，记录差异
+                if actual_output != expected_output_file:
+                    self.log(f"注意: 实际输出文件名与预期不同", "INFO")
+                    self.log(f"  预期: {os.path.basename(expected_output_file)}", "INFO")
+                    self.log(f"  实际: {os.path.basename(actual_output)}", "INFO")
+                
+                return success, prompt_id, actual_output
             else:
-                # 尝试查找实际输出文件
-                import glob
-                output_files = glob.glob(os.path.join(output_dir, f"{output_prefix}*.mp4"))
-                if output_files:
-                    actual_output = output_files[0]
-                    file_size_mb = os.path.getsize(actual_output) / (1024 * 1024)
-                    self.log(f"找到实际输出文件: {actual_output} ({file_size_mb:.1f}MB)", "INFO")
-                    return success, prompt_id, actual_output
-                else:
-                    self.log(f"预期输出文件不存在，但任务显示成功", "WARN")
-                    return success, prompt_id, None
+                self.log(f"未能找到输出文件，但任务显示成功", "WARN")
+                return success, prompt_id, None
         else:
             self.log(f"批次 {batch_number} 处理失败 (总批次: {current_batch_number})", "ERROR")
             return False, prompt_id, None
@@ -799,7 +810,7 @@ class FlashVSR_XZG_MIX_Processor:
         video_path: str,
         frames_per_batch: int = 50,
         attn_mode: str = "block_sparse_attention",
-        tiled_dit: bool = False,  # 修复：改为 bool 类型
+        tiled_dit: bool = False,
         tile_size: int = 256,
         tile_overlap: int = 24,
         scale: int = 2,
@@ -807,8 +818,8 @@ class FlashVSR_XZG_MIX_Processor:
         timeout_per_batch: int = 600,
         frames_pre: int = 0,
         batch_pre: int = 0,
-        auto_load_state: bool = True,  # 修复：改为 bool 类型
-        save_state: bool = True,  # 修复：改为 bool 类型
+        auto_load_state: bool = True,
+        save_state: bool = True,
         max_workers: int = 1,
         output_dir: str = "output"
     ) -> Dict:
@@ -872,10 +883,22 @@ class FlashVSR_XZG_MIX_Processor:
         video_fps, total_frames, video_width, video_height, method = self.get_video_info(video_path)
         self.log(f"视频信息: {total_frames} 帧, {video_fps:.2f} FPS, 分辨率: {video_width}x{video_height} (方法: {method})", "INFO")
         
-        # 计算对齐后的输入输出宽度
-        in_width_aligned = self.calculate_aligned_dimension(video_width, 128)
-        out_width_aligned = self.calculate_aligned_dimension(int(video_width * scale), 128)
-        self.log(f"尺寸对齐: 输入 {video_width} -> {in_width_aligned}, 输出 {int(video_width * scale)} -> {out_width_aligned}", "INFO")
+        # 计算对齐后的输入输出宽度 - 只在需要时计算
+        in_width_aligned = None
+        out_width_aligned = None
+        
+        # 检查模板是否需要计算尺寸
+        if "26" in workflow_template:
+            node_26_inputs = workflow_template["26"].get("inputs", {})
+            scale_to_length = node_26_inputs.get("scale_to_length", "")
+            if isinstance(scale_to_length, str) and "{{IN_WIDTH}}" in scale_to_length:
+                in_width_aligned = self.calculate_aligned_dimension(video_width, 128)
+        
+        if "19" in workflow_template:
+            node_19_inputs = workflow_template["19"].get("inputs", {})
+            scale_to_length = node_19_inputs.get("scale_to_length", "")
+            if isinstance(scale_to_length, str) and "{{OUT_WIDTH}}" in scale_to_length:
+                out_width_aligned = self.calculate_aligned_dimension(int(video_width * scale), 128)
         
         # 计算剩余可处理帧数
         remaining_frames = total_frames - frames_pre
@@ -890,8 +913,6 @@ class FlashVSR_XZG_MIX_Processor:
                 "video_fps": video_fps,
                 "video_width": video_width,
                 "video_height": video_height,
-                "in_width_aligned": in_width_aligned,
-                "out_width_aligned": out_width_aligned,
                 "total_frames": total_frames,
                 "remaining_frames": 0,
                 "frames_pre": frames_pre,
@@ -903,8 +924,7 @@ class FlashVSR_XZG_MIX_Processor:
                 self.save_processing_state(video_path, frames_pre, batch_pre, True)
             return result
         
-        # 计算批次数（与flashvsr_xzg.py保持一致的逻辑）
-        # (总帧数 - {{FRAMS_PRE}}) / frames_per_batch
+        # 计算批次数
         total_batches = remaining_frames // frames_per_batch
         if remaining_frames % frames_per_batch > 0:
             total_batches += 1
@@ -1057,8 +1077,6 @@ class FlashVSR_XZG_MIX_Processor:
             "video_fps": video_fps,
             "video_width": video_width,
             "video_height": video_height,
-            "in_width_aligned": in_width_aligned,
-            "out_width_aligned": out_width_aligned,
             "total_frames": total_frames,
             "remaining_frames": remaining_frames,
             "processed_frames": processed_frames,
@@ -1277,6 +1295,9 @@ def main():
   
   # 处理目录下的所有视频文件
   python flashvsr_mix.py -i ./videos --template api_flashvsr_mix.json --max-workers 2
+  
+  # 使用4K模板
+  python flashvsr_mix.py -i video.mp4 --template api_flashvsr_mix_4K.json
 
 功能特性:
   1. 自动128对齐：自动计算输入和输出宽度，对齐到128的倍数
@@ -1284,6 +1305,7 @@ def main():
   3. 分块开关：可控制是否启用分块处理
   4. 断点续跑：支持自动加载和保存处理状态
   5. 并行处理：支持多线程并行处理
+  6. 多模板兼容：支持带占位符和硬编码参数的模板
 
 注意:
   1. 脚本使用 pymediainfo 获取视频信息，请确保已安装
@@ -1511,8 +1533,6 @@ def main():
             processor.log(f"  分块大小: {params.get('tile_size')}", "INFO")
             processor.log(f"  分块重叠: {params.get('tile_overlap')}", "INFO")
             processor.log(f"  缩放倍数: {params.get('scale')}", "INFO")
-            processor.log(f"  输入宽度: {result.get('in_width_aligned', 'N/A')}", "INFO")
-            processor.log(f"  输出宽度: {result.get('out_width_aligned', 'N/A')}", "INFO")
     
     processor.log(f"总耗时: {total_time:.2f}秒 ({total_time/60:.1f}分钟)", "INFO")
     processor.log(f"总视频数: {total_videos}", "INFO")
