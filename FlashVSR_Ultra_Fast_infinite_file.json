@@ -1,0 +1,1736 @@
+{
+  "id": "01ceaf8b-71c5-4222-9855-b2f6442ab5d9",
+  "revision": 0,
+  "last_node_id": 75,
+  "last_link_id": 86,
+  "nodes": [
+    {
+      "id": 9,
+      "type": "SetNode",
+      "pos": [
+        792.260151804259,
+        5.577908878044971
+      ],
+      "size": [
+        304.2839731633479,
+        63.734038906605065
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            35
+          ]
+        }
+      ],
+      "title": "Set_单轮处理帧数",
+      "properties": {
+        "previousName": "单轮处理帧数"
+      },
+      "widgets_values": [
+        "单轮处理帧数"
+      ],
+      "color": "#1b4669",
+      "bgcolor": "#29699c"
+    },
+    {
+      "id": 46,
+      "type": "PreviewAny",
+      "pos": [
+        1514.6172668771258,
+        762.0635377454277
+      ],
+      "size": [
+        210,
+        112
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 22,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 57
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.12.3",
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": [
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "id": 22,
+      "type": "GetNode",
+      "pos": [
+        380.3299495688901,
+        978.2900472001827
+      ],
+      "size": [
+        262.61573213600377,
+        63.39455233588251
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            15
+          ]
+        }
+      ],
+      "title": "Get_总帧数",
+      "properties": {},
+      "widgets_values": [
+        "总帧数"
+      ],
+      "color": "#1b4669",
+      "bgcolor": "#29699c"
+    },
+    {
+      "id": 10,
+      "type": "easy mathInt",
+      "pos": [
+        741.0022007189839,
+        757.2190457463031
+      ],
+      "size": [
+        270,
+        106
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "a",
+          "type": "INT",
+          "widget": {
+            "name": "a"
+          },
+          "link": 9
+        },
+        {
+          "name": "b",
+          "type": "INT",
+          "widget": {
+            "name": "b"
+          },
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            14
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-easy-use",
+        "ver": "7c470c67d6df44498e52c902173c1ac77cd5bdfd",
+        "Node name for S&R": "easy mathInt"
+      },
+      "widgets_values": [
+        0,
+        0,
+        "multiply"
+      ]
+    },
+    {
+      "id": 23,
+      "type": "easy mathInt",
+      "pos": [
+        746.6032747474583,
+        940.0162587996573
+      ],
+      "size": [
+        270,
+        106
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "a",
+          "type": "INT",
+          "widget": {
+            "name": "a"
+          },
+          "link": 15
+        },
+        {
+          "name": "b",
+          "type": "INT",
+          "widget": {
+            "name": "b"
+          },
+          "link": 18
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            17
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-easy-use",
+        "ver": "7c470c67d6df44498e52c902173c1ac77cd5bdfd",
+        "Node name for S&R": "easy mathInt"
+      },
+      "widgets_values": [
+        0,
+        0,
+        "subtract"
+      ]
+    },
+    {
+      "id": 20,
+      "type": "easy compare",
+      "pos": [
+        757.5505721356499,
+        1120.776543882185
+      ],
+      "size": [
+        270,
+        78
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "a",
+          "shape": 7,
+          "type": "*",
+          "link": 43
+        },
+        {
+          "name": "b",
+          "shape": 7,
+          "type": "*",
+          "link": 44
+        }
+      ],
+      "outputs": [
+        {
+          "name": "boolean",
+          "type": "BOOLEAN",
+          "links": [
+            22
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-easy-use",
+        "ver": "7c470c67d6df44498e52c902173c1ac77cd5bdfd",
+        "Node name for S&R": "easy compare"
+      },
+      "widgets_values": [
+        "a < b"
+      ]
+    },
+    {
+      "id": 30,
+      "type": "Int To Number (mtb)",
+      "pos": [
+        1116.356406360069,
+        1063.9178976628757
+      ],
+      "size": [
+        173.228125,
+        26
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "int",
+          "type": "INT",
+          "link": 23
+        }
+      ],
+      "outputs": [
+        {
+          "name": "NUMBER",
+          "type": "NUMBER",
+          "links": [
+            24
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-mtb",
+        "ver": "71f601094ad03172d8f64d06df911dd9e7df4fe1",
+        "Node name for S&R": "Int To Number (mtb)"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 31,
+      "type": "Int To Number (mtb)",
+      "pos": [
+        1111.349279281309,
+        1150.9036687689866
+      ],
+      "size": [
+        173.228125,
+        26
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "int",
+          "type": "INT",
+          "link": 25
+        }
+      ],
+      "outputs": [
+        {
+          "name": "NUMBER",
+          "type": "NUMBER",
+          "links": [
+            26
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-mtb",
+        "ver": "71f601094ad03172d8f64d06df911dd9e7df4fe1",
+        "Node name for S&R": "Int To Number (mtb)"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 5,
+      "type": "FlashVSRInitPipe",
+      "pos": [
+        2560.694425240514,
+        893.9111954557968
+      ],
+      "size": [
+        418.89400622109815,
+        215.34911779913296
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "pipe",
+          "type": "PIPE",
+          "links": [
+            5
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "flashvsr_ultra_fast",
+        "ver": "9c4f26042c5d132903129909031c58cb36ca815e",
+        "Node name for S&R": "FlashVSRInitPipe",
+        "aux_id": "lihaoyun6/ComfyUI-FlashVSR_Ultra_Fast"
+      },
+      "widgets_values": [
+        "FlashVSR-v1.1",
+        "tiny-long",
+        "none",
+        true,
+        "fp16",
+        "auto",
+        "block_sparse_attention"
+      ]
+    },
+    {
+      "id": 21,
+      "type": "SetNode",
+      "pos": [
+        1117.9684740111352,
+        750.4298798246838
+      ],
+      "size": [
+        260.918398991455,
+        86.00514223594314
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            18,
+            56
+          ]
+        }
+      ],
+      "title": "Set_已处理",
+      "properties": {
+        "previousName": "已处理"
+      },
+      "widgets_values": [
+        "已处理"
+      ],
+      "color": "#1b4669",
+      "bgcolor": "#29699c"
+    },
+    {
+      "id": 29,
+      "type": "Number Input Switch",
+      "pos": [
+        1216.5805384375305,
+        1209.3748669405325
+      ],
+      "size": [
+        339.27458446072717,
+        83.82148522829539
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "number_a",
+          "type": "NUMBER",
+          "link": 24
+        },
+        {
+          "name": "number_b",
+          "type": "NUMBER",
+          "link": 26
+        },
+        {
+          "name": "boolean",
+          "type": "BOOLEAN",
+          "link": 22
+        }
+      ],
+      "outputs": [
+        {
+          "name": "NUMBER",
+          "type": "NUMBER",
+          "links": null
+        },
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            57,
+            58
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "was-node-suite-comfyui",
+        "ver": "ea935d1044ae5a26efa54ebeb18fe9020af49a45",
+        "Node name for S&R": "Number Input Switch"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 24,
+      "type": "SetNode",
+      "pos": [
+        1127.105267772542,
+        891.5892481615654
+      ],
+      "size": [
+        260.06978939578767,
+        88.85380880821776
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "link": 17
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            23,
+            43
+          ]
+        }
+      ],
+      "title": "Set_待处理",
+      "properties": {
+        "previousName": "待处理"
+      },
+      "widgets_values": [
+        "待处理"
+      ],
+      "color": "#1b4669",
+      "bgcolor": "#29699c"
+    },
+    {
+      "id": 11,
+      "type": "GetNode",
+      "pos": [
+        383.2150882991289,
+        823.4129060341711
+      ],
+      "size": [
+        271.10211297571027,
+        76.97281865602054
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            10,
+            25,
+            44
+          ]
+        }
+      ],
+      "title": "Get_单轮处理帧数",
+      "properties": {},
+      "widgets_values": [
+        "单轮处理帧数"
+      ],
+      "color": "#1b4669",
+      "bgcolor": "#29699c"
+    },
+    {
+      "id": 52,
+      "type": "VHS_VideoInfoSource",
+      "pos": [
+        2312.4261336376335,
+        943.8241429020413
+      ],
+      "size": [
+        253.4775390625,
+        106
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 25,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "link": 60
+        }
+      ],
+      "outputs": [
+        {
+          "name": "fps🟨",
+          "type": "FLOAT",
+          "links": [
+            61
+          ]
+        },
+        {
+          "name": "frame_count🟨",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "duration🟨",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "width🟨",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "height🟨",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "3234937ff5f3ca19068aaba5042771514de2429d",
+        "Node name for S&R": "VHS_VideoInfoSource"
+      },
+      "widgets_values": {}
+    },
+    {
+      "id": 6,
+      "type": "easy forLoopStart",
+      "pos": [
+        397.34626449772355,
+        383.5318908921114
+      ],
+      "size": [
+        270,
+        138
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "initial_value1",
+          "shape": 7,
+          "type": "*",
+          "link": null
+        },
+        {
+          "name": "total",
+          "type": "INT",
+          "widget": {
+            "name": "total"
+          },
+          "link": 36
+        },
+        {
+          "name": "initial_value2",
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "flow",
+          "shape": 5,
+          "type": "FLOW_CONTROL",
+          "links": [
+            7
+          ]
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "links": [
+            9
+          ]
+        },
+        {
+          "name": "value1",
+          "type": "*",
+          "links": [
+            31
+          ]
+        },
+        {
+          "name": "value2",
+          "type": "*",
+          "links": []
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-easy-use",
+        "ver": "7c470c67d6df44498e52c902173c1ac77cd5bdfd",
+        "Node name for S&R": "easy forLoopStart"
+      },
+      "widgets_values": [
+        1
+      ],
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 39,
+      "type": "GetNode",
+      "pos": [
+        415.4245883142038,
+        201.98991976666807
+      ],
+      "size": [
+        295.8824247949043,
+        69.33505026081144
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            34
+          ]
+        }
+      ],
+      "title": "Get_总帧数",
+      "properties": {},
+      "widgets_values": [
+        "总帧数"
+      ],
+      "color": "#1b4669",
+      "bgcolor": "#29699c"
+    },
+    {
+      "id": 38,
+      "type": "MathExpression|pysssss",
+      "pos": [
+        811.9252472135458,
+        172.36478807415546
+      ],
+      "size": [
+        334.6546795114541,
+        128
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "a",
+          "shape": 7,
+          "type": "INT,FLOAT,IMAGE,LATENT",
+          "link": 34
+        },
+        {
+          "name": "b",
+          "shape": 7,
+          "type": "INT,FLOAT,IMAGE,LATENT",
+          "link": 35
+        },
+        {
+          "name": "c",
+          "shape": 7,
+          "type": "INT,FLOAT,IMAGE,LATENT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            36
+          ]
+        },
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-custom-scripts",
+        "ver": "1.2.5",
+        "Node name for S&R": "MathExpression|pysssss"
+      },
+      "widgets_values": [
+        "ceil(a/b)"
+      ]
+    },
+    {
+      "id": 49,
+      "type": "VHS_LoadVideo",
+      "pos": [
+        1847.5095494945058,
+        977.5922295748998
+      ],
+      "size": [
+        432.484699347075,
+        578.2988195003811
+      ],
+      "flags": {},
+      "order": 23,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "frame_load_cap",
+          "type": "INT",
+          "widget": {
+            "name": "frame_load_cap"
+          },
+          "link": 58
+        },
+        {
+          "name": "skip_first_frames",
+          "type": "INT",
+          "widget": {
+            "name": "skip_first_frames"
+          },
+          "link": 56
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            53
+          ]
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": []
+        },
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "links": [
+            60
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "3234937ff5f3ca19068aaba5042771514de2429d",
+        "Node name for S&R": "VHS_LoadVideo"
+      },
+      "widgets_values": {
+        "video": "ComfyUI_00047_.mp4",
+        "force_rate": 0,
+        "custom_width": 0,
+        "custom_height": 0,
+        "frame_load_cap": 0,
+        "skip_first_frames": 0,
+        "select_every_nth": 1,
+        "format": "AnimateDiff",
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "ComfyUI_00047_.mp4",
+            "type": "input",
+            "format": "video/mp4",
+            "force_rate": 0,
+            "custom_width": 0,
+            "custom_height": 0,
+            "frame_load_cap": 0,
+            "skip_first_frames": 0,
+            "select_every_nth": 1
+          }
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "PrimitiveInt",
+      "pos": [
+        413.809737920029,
+        17.352262679509217
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "title": "per_batch",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.12.3",
+        "Node name for S&R": "PrimitiveInt"
+      },
+      "widgets_values": [
+        201,
+        "fixed"
+      ]
+    },
+    {
+      "id": 36,
+      "type": "easy batchAnything",
+      "pos": [
+        1152.6629351476945,
+        475.72750675930877
+      ],
+      "size": [
+        140,
+        46
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "any_1",
+          "type": "*",
+          "link": 31
+        },
+        {
+          "name": "any_2",
+          "type": "*",
+          "link": 76
+        }
+      ],
+      "outputs": [
+        {
+          "name": "batch",
+          "type": "*",
+          "links": [
+            32
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-easy-use",
+        "ver": "7c470c67d6df44498e52c902173c1ac77cd5bdfd",
+        "Node name for S&R": "easy batchAnything"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 1,
+      "type": "FlashVSRNodeAdv",
+      "pos": [
+        2567.4187382640544,
+        1181.2670524962878
+      ],
+      "size": [
+        427.40473930103474,
+        398.663737790725
+      ],
+      "flags": {},
+      "order": 24,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pipe",
+          "type": "PIPE",
+          "link": 5
+        },
+        {
+          "name": "frames",
+          "type": "IMAGE",
+          "link": 53
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            72
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "flashvsr_ultra_fast",
+        "ver": "9c4f26042c5d132903129909031c58cb36ca815e",
+        "Node name for S&R": "FlashVSRNodeAdv",
+        "aux_id": "lihaoyun6/ComfyUI-FlashVSR_Ultra_Fast"
+      },
+      "widgets_values": [
+        4,
+        true,
+        true,
+        true,
+        256,
+        24,
+        false,
+        2,
+        3,
+        11,
+        765473230196164,
+        "randomize"
+      ]
+    },
+    {
+      "id": 44,
+      "type": "SetNode",
+      "pos": [
+        2307.4171729474815,
+        1055.6969169498655
+      ],
+      "size": [
+        233.55328091581316,
+        58
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 26,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "link": 61
+        }
+      ],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            73
+          ]
+        }
+      ],
+      "title": "Set_原始帧率",
+      "properties": {
+        "previousName": "原始帧率"
+      },
+      "widgets_values": [
+        "原始帧率"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 37,
+      "type": "GetNode",
+      "pos": [
+        859.7284038320906,
+        550.531246071538
+      ],
+      "size": [
+        275.2408931864179,
+        78.97901660113655
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VHS_FILENAMES",
+          "type": "VHS_FILENAMES",
+          "links": [
+            76
+          ]
+        }
+      ],
+      "title": "Get_file_name",
+      "properties": {},
+      "widgets_values": [
+        "file_name"
+      ]
+    },
+    {
+      "id": 64,
+      "type": "easy showAnything",
+      "pos": [
+        1908.7205026719,
+        120.73356928546436
+      ],
+      "size": [
+        527.1244412445617,
+        346.37881464433605
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "shape": 7,
+          "type": "*",
+          "link": 75
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-easy-use",
+        "ver": "7c470c67d6df44498e52c902173c1ac77cd5bdfd",
+        "Node name for S&R": "easy showAnything"
+      },
+      "widgets_values": [
+        "[\n    true,\n    [\n        \"/root/comfy/ComfyUI/output/batch_upscale_00001.png\",\n        \"/root/comfy/ComfyUI/output/batch_upscale_00001.mp4\"\n    ],\n    true,\n    [\n        \"/root/comfy/ComfyUI/output/batch_upscale_00002.png\",\n        \"/root/comfy/ComfyUI/output/batch_upscale_00002.mp4\"\n    ],\n    true,\n    [\n        \"/root/comfy/ComfyUI/output/batch_upscale_00003.png\",\n        \"/root/comfy/ComfyUI/output/batch_upscale_00003.mp4\"\n    ],\n    true,\n    [\n        \"/root/comfy/ComfyUI/output/batch_upscale_00004.png\",\n        \"/root/comfy/ComfyUI/output/batch_upscale_00004.mp4\"\n    ]\n]"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "easy forLoopEnd",
+      "pos": [
+        1461.321204795775,
+        299.5099068803925
+      ],
+      "size": [
+        273.67786515677244,
+        99.4643702199744
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "flow",
+          "shape": 5,
+          "type": "FLOW_CONTROL",
+          "link": 7
+        },
+        {
+          "name": "initial_value1",
+          "shape": 7,
+          "type": "*",
+          "link": 32
+        },
+        {
+          "name": "initial_value2",
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "value1",
+          "type": "*",
+          "links": [
+            75
+          ]
+        },
+        {
+          "name": "value2",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-easy-use",
+        "ver": "7c470c67d6df44498e52c902173c1ac77cd5bdfd",
+        "Node name for S&R": "easy forLoopEnd"
+      },
+      "widgets_values": [],
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 50,
+      "type": "PrimitiveInt",
+      "pos": [
+        -703.1089326812412,
+        277.8470382092511
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            59
+          ]
+        }
+      ],
+      "title": "总帧数",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.12.3",
+        "Node name for S&R": "PrimitiveInt"
+      },
+      "widgets_values": [
+        801,
+        "fixed"
+      ]
+    },
+    {
+      "id": 12,
+      "type": "SetNode",
+      "pos": [
+        -327.9688602338669,
+        289.9354519770059
+      ],
+      "size": [
+        354.3667595614992,
+        68.80202697903371
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "link": 59
+        }
+      ],
+      "outputs": [
+        {
+          "name": "*",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "title": "Set_总帧数",
+      "properties": {
+        "previousName": "总帧数"
+      },
+      "widgets_values": [
+        "总帧数"
+      ],
+      "color": "#1b4669",
+      "bgcolor": "#29699c"
+    },
+    {
+      "id": 63,
+      "type": "SetNode",
+      "pos": [
+        3040.2531402125837,
+        1559.1933160783706
+      ],
+      "size": [
+        365.0551813849929,
+        64.16111248962693
+      ],
+      "flags": {},
+      "order": 28,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "VHS_FILENAMES",
+          "type": "VHS_FILENAMES",
+          "link": 74
+        }
+      ],
+      "outputs": [
+        {
+          "name": "*",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "title": "Set_file_name",
+      "properties": {
+        "previousName": "file_name"
+      },
+      "widgets_values": [
+        "file_name"
+      ]
+    },
+    {
+      "id": 62,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        3052.4749005956855,
+        842.6898530212304
+      ],
+      "size": [
+        563.2943630166619,
+        682.334992625638
+      ],
+      "flags": {},
+      "order": 27,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 72
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "frame_rate",
+          "type": "FLOAT",
+          "widget": {
+            "name": "frame_rate"
+          },
+          "link": 73
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": [
+            74
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "3234937ff5f3ca19068aaba5042771514de2429d",
+        "Node name for S&R": "VHS_VideoCombine"
+      },
+      "widgets_values": {
+        "frame_rate": 8,
+        "loop_count": 0,
+        "filename_prefix": "batch_upscale",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "batch_upscale_00004.mp4",
+            "subfolder": "",
+            "type": "output",
+            "format": "video/h264-mp4",
+            "frame_rate": 25,
+            "workflow": "batch_upscale_00004.png",
+            "fullpath": "/root/comfy/ComfyUI/output/batch_upscale_00004.mp4"
+          }
+        }
+      }
+    }
+  ],
+  "links": [
+    [
+      5,
+      5,
+      0,
+      1,
+      0,
+      "PIPE"
+    ],
+    [
+      7,
+      6,
+      0,
+      7,
+      0,
+      "FLOW_CONTROL"
+    ],
+    [
+      8,
+      8,
+      0,
+      9,
+      0,
+      "INT"
+    ],
+    [
+      9,
+      6,
+      1,
+      10,
+      0,
+      "INT"
+    ],
+    [
+      10,
+      11,
+      0,
+      10,
+      1,
+      "INT"
+    ],
+    [
+      14,
+      10,
+      0,
+      21,
+      0,
+      "INT"
+    ],
+    [
+      15,
+      22,
+      0,
+      23,
+      0,
+      "INT"
+    ],
+    [
+      17,
+      23,
+      0,
+      24,
+      0,
+      "INT"
+    ],
+    [
+      18,
+      21,
+      0,
+      23,
+      1,
+      "INT"
+    ],
+    [
+      22,
+      20,
+      0,
+      29,
+      2,
+      "BOOLEAN"
+    ],
+    [
+      23,
+      24,
+      0,
+      30,
+      0,
+      "INT"
+    ],
+    [
+      24,
+      30,
+      0,
+      29,
+      0,
+      "NUMBER"
+    ],
+    [
+      25,
+      11,
+      0,
+      31,
+      0,
+      "INT"
+    ],
+    [
+      26,
+      31,
+      0,
+      29,
+      1,
+      "NUMBER"
+    ],
+    [
+      31,
+      6,
+      2,
+      36,
+      0,
+      "*"
+    ],
+    [
+      32,
+      36,
+      0,
+      7,
+      1,
+      "*"
+    ],
+    [
+      34,
+      39,
+      0,
+      38,
+      0,
+      "INT"
+    ],
+    [
+      35,
+      9,
+      0,
+      38,
+      1,
+      "INT,FLOAT,IMAGE,LATENT"
+    ],
+    [
+      36,
+      38,
+      0,
+      6,
+      1,
+      "INT"
+    ],
+    [
+      43,
+      24,
+      0,
+      20,
+      0,
+      "INT"
+    ],
+    [
+      44,
+      11,
+      0,
+      20,
+      1,
+      "INT"
+    ],
+    [
+      53,
+      49,
+      0,
+      1,
+      1,
+      "IMAGE"
+    ],
+    [
+      56,
+      21,
+      0,
+      49,
+      3,
+      "INT"
+    ],
+    [
+      57,
+      29,
+      2,
+      46,
+      0,
+      "INT"
+    ],
+    [
+      58,
+      29,
+      2,
+      49,
+      2,
+      "INT"
+    ],
+    [
+      59,
+      50,
+      0,
+      12,
+      0,
+      "INT"
+    ],
+    [
+      60,
+      49,
+      3,
+      52,
+      0,
+      "VHS_VIDEOINFO"
+    ],
+    [
+      61,
+      52,
+      0,
+      44,
+      0,
+      "FLOAT"
+    ],
+    [
+      72,
+      1,
+      0,
+      62,
+      0,
+      "IMAGE"
+    ],
+    [
+      73,
+      44,
+      0,
+      62,
+      4,
+      "FLOAT"
+    ],
+    [
+      74,
+      62,
+      0,
+      63,
+      0,
+      "VHS_FILENAMES"
+    ],
+    [
+      75,
+      7,
+      0,
+      64,
+      0,
+      "*"
+    ],
+    [
+      76,
+      37,
+      0,
+      36,
+      1,
+      "VHS_FILENAMES"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "设置原始原始信息",
+      "bounding": [
+        -871.4884500011143,
+        112.89038195702173,
+        1130.2570650790121,
+        753.07000167448
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {
+        "pinned": true
+      }
+    },
+    {
+      "id": 2,
+      "title": "循环框架",
+      "bounding": [
+        332.6140444902637,
+        -105.16220764921553,
+        1418.901415674155,
+        739.9878434805702
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {
+        "pinned": true
+      }
+    },
+    {
+      "id": 3,
+      "title": "FrameLoad计算",
+      "bounding": [
+        328.31994832022633,
+        676.1811247019472,
+        1421.7019213512585,
+        647.5708741019574
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {
+        "pinned": true
+      }
+    },
+    {
+      "id": 4,
+      "title": "4X高清放大",
+      "bounding": [
+        1800.5477378344888,
+        765.6492405878156,
+        1609.2501259701767,
+        853.5772481840286
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {
+        "pinned": true
+      }
+    },
+    {
+      "id": 5,
+      "title": "生成结果",
+      "bounding": [
+        1830.0238676655126,
+        -189.15071205396097,
+        1565.1414111787203,
+        919.9264938173399
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {
+        "pinned": true
+      }
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.8048323353315858,
+      "offset": [
+        783.3249919421863,
+        84.032374286472
+      ]
+    },
+    "frontendVersion": "1.38.13",
+    "VHS_latentpreview": true,
+    "VHS_latentpreviewrate": 10,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true,
+    "workflowRendererVersion": "LG"
+  },
+  "version": 0.4
+}
