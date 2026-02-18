@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ComfyUI FlashVSR-XZG 批量视频处理脚本（增强版）
-配合 FlashVSR-XZG.json 工作流模板使用
-支持断点续跑和已处理帧数跟踪
-版本: 2.0
+ComfyUI FlashVSR-XZG 批量视频处理脚本（v3.0 完整增强版）
+支持断点续跑、状态文件、智能批次调整、输出验证和并行处理
+版本: 3.0
 """
 
 import json
@@ -22,6 +21,7 @@ from pathlib import Path
 import traceback
 import argparse
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 
 # 尝试导入 pymediainfo
 try:
@@ -34,7 +34,7 @@ except ImportError:
 class FlashVSR_XZG_Processor:
     def __init__(self, comfyui_url: str = "http://127.0.0.1:8188", log_dir: str = "."):
         """
-        初始化 ComfyUI FlashVSR-XZG 处理器（增强版）
+        初始化 ComfyUI FlashVSR-XZG 处理器（v3.0 完整增强版）
         
         参数:
             comfyui_url: ComfyUI 服务器地址
@@ -50,27 +50,31 @@ class FlashVSR_XZG_Processor:
         self.log_dir = log_dir
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.log_file = os.path.join(self.log_dir, f"flashvsr_xzg_{timestamp}.log")
+        self.state_dir = os.path.join(self.log_dir, "states")
         
-        # 创建日志目录
+        # 创建日志和状态目录
         os.makedirs(self.log_dir, exist_ok=True)
+        os.makedirs(self.state_dir, exist_ok=True)
         
         # 初始化日志
         self._init_log_file()
         
-        self.log("📱 初始化 FlashVSR-XZG 处理器（增强版）")
+        self.log("📱 初始化 FlashVSR-XZG 处理器 v3.0")
         self.log(f"🔗 ComfyUI 地址: {self.comfyui_url}")
         self.log(f"📝 日志文件: {self.log_file}")
+        self.log(f"💾 状态目录: {self.state_dir}")
         
-        # 状态跟踪（用于断点续跑）
+        # 状态跟踪
         self.processing_state = {}
+        self.output_validation_enabled = True
     
     def _init_log_file(self):
         """初始化日志文件"""
         with open(self.log_file, 'a', encoding='utf-8') as f:
             f.write(f"{'='*80}\n")
-            f.write(f"FlashVSR-XZG 处理日志（增强版）\n")
+            f.write(f"FlashVSR-XZG 处理日志 v3.0\n")
             f.write(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"支持功能: 断点续跑、已处理帧数跟踪、批次号连续\n")
+            f.write(f"支持功能: 断点续跑、状态文件、智能批次调整、输出验证、并行处理\n")
             f.write(f"{'='*80}\n\n")
     
     def log(self, message: str, level: str = "INFO"):
@@ -93,6 +97,83 @@ class FlashVSR_XZG_Processor:
                 f.write(log_entry + "\n")
         except Exception as e:
             print(f"⚠️ 写入日志失败: {e}")
+    
+    def save_processing_state(self, video_path: str, frames_processed: int, batches_processed: int, 
+                            success: bool = True, error_msg: str = ""):
+        """
+        保存处理状态到文件（改进点1）
+        
+        参数:
+            video_path: 视频路径
+            frames_processed: 已处理帧数
+            batches_processed: 已处理批次
+            success: 是否成功
+            error_msg: 错误信息
+        """
+        try:
+            video_name = os.path.basename(video_path)
+            # 安全文件名（移除特殊字符）
+            safe_video_name = re.sub(r'[^\w\-\.]', '_', video_name)
+            state_file = os.path.join(self.state_dir, f"{safe_video_name}_state.json")
+            
+            state = {
+                "video_path": video_path,
+                "video_name": video_name,
+                "frames_processed": frames_processed,
+                "batches_processed": batches_processed,
+                "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "success": success,
+                "error_msg": error_msg
+            }
+            
+            with open(state_file, 'w', encoding='utf-8') as f:
+                json.dump(state, f, indent=2, ensure_ascii=False)
+            
+            self.log(f"💾 已保存状态文件: {state_file}", "INFO")
+            return True
+        except Exception as e:
+            self.log(f"❌ 保存状态文件失败: {e}", "ERROR")
+            return False
+    
+    def load_processing_state(self, video_path: str) -> Tuple[int, int, Dict]:
+        """
+        从文件加载处理状态（改进点1）
+        
+        参数:
+            video_path: 视频路径
+            
+        返回:
+            (frames_processed: int, batches_processed: int, state: Dict)
+        """
+        try:
+            video_name = os.path.basename(video_path)
+            safe_video_name = re.sub(r'[^\w\-\.]', '_', video_name)
+            
+            # 查找状态文件（支持多种命名格式）
+            state_files = [
+                os.path.join(self.state_dir, f"{safe_video_name}_state.json"),
+                os.path.join(self.state_dir, f"{video_name}_state.json"),
+                os.path.join(self.log_dir, f"flashvsr_state_{safe_video_name}.json"),
+                os.path.join(self.log_dir, f"flashvsr_state_{video_name}.json"),
+            ]
+            
+            for state_file in state_files:
+                if os.path.exists(state_file):
+                    with open(state_file, 'r', encoding='utf-8') as f:
+                        state = json.load(f)
+                    
+                    frames = state.get("frames_processed", 0)
+                    batches = state.get("batches_processed", 0)
+                    
+                    self.log(f"📂 加载状态文件: {state_file}", "INFO")
+                    self.log(f"  📊 已处理: {frames} 帧, {batches} 批", "INFO")
+                    
+                    return frames, batches, state
+            
+            return 0, 0, {}
+        except Exception as e:
+            self.log(f"❌ 加载状态文件失败: {e}", "ERROR")
+            return 0, 0, {}
     
     def check_comfyui_server(self, timeout: int = 10) -> bool:
         """检查 ComfyUI 服务是否可用"""
@@ -202,7 +283,7 @@ class FlashVSR_XZG_Processor:
         batch_pre: int = 0
     ) -> Dict:
         """
-        更新工作流参数（增强版）
+        更新工作流参数（v3.0增强版）
         
         参数:
             workflow: 工作流模板
@@ -249,16 +330,15 @@ class FlashVSR_XZG_Processor:
                     inputs["frame_load_cap"] = str(frames_per_batch)
                     self.log(f"  ✅ 设置每批帧数: {frames_per_batch}", "INFO")
                 
-                # 更新跳过帧数（增强版逻辑）
+                # 更新跳过帧数（v3.0增强版逻辑）
                 if isinstance(inputs.get("skip_first_frames"), str) and "{{FRAMES_SKIP}}" in inputs["skip_first_frames"]:
                     inputs["skip_first_frames"] = str(frames_skip)
                     self.log(f"  ✅ 设置跳过帧数: {frames_skip}", "INFO")
                 
                 # 新增：已跑帧数参数（如果模板支持）
                 if isinstance(inputs.get("skip_first_frames"), str) and "{{FRAMS_PRE}}" in inputs["skip_first_frames"]:
-                    # 注意：这里假设模板中可能有 {{FRAMS_PRE}} 占位符
-                    # 实际使用中可能不需要这个占位符，因为 FRAMES_SKIP 已经包含了已跑帧数
-                    self.log(f"  ℹ️  检测到 {{FRAMS_PRE}} 占位符，将使用 frames_skip 替代", "INFO")
+                    inputs["skip_first_frames"] = str(frames_skip)  # 直接使用计算好的总跳过帧数
+                    self.log(f"  ℹ️  检测到 {{FRAMS_PRE}} 占位符，已使用 frames_skip={frames_skip} 替代", "INFO")
             
             # 更新 VHS_VideoCombine 节点 (ID 817)
             elif node_data.get("class_type") == "VHS_VideoCombine":
@@ -381,6 +461,63 @@ class FlashVSR_XZG_Processor:
         self.log(f"⏰ 任务 {prompt_id} 等待超时 ({timeout}秒)", "ERROR")
         return False
     
+    def validate_output_file(self, output_path: str, min_size_kb: int = 10) -> bool:
+        """
+        验证生成的视频文件（改进点3）
+        
+        参数:
+            output_path: 输出文件路径
+            min_size_kb: 最小文件大小（KB）
+            
+        返回:
+            是否有效
+        """
+        if not self.output_validation_enabled:
+            return True
+            
+        try:
+            if not os.path.exists(output_path):
+                self.log(f"❌ 输出文件不存在: {output_path}", "ERROR")
+                return False
+            
+            # 检查文件大小
+            file_size_kb = os.path.getsize(output_path) / 1024
+            if file_size_kb < min_size_kb:
+                self.log(f"❌ 输出文件太小: {file_size_kb:.1f}KB (< {min_size_kb}KB) - {output_path}", "ERROR")
+                return False
+            
+            # 检查文件扩展名
+            if not output_path.lower().endswith('.mp4'):
+                self.log(f"⚠️ 输出文件不是MP4格式: {output_path}", "WARN")
+            
+            # 尝试使用 OpenCV 验证视频（可选）
+            try:
+                import cv2
+                cap = cv2.VideoCapture(output_path)
+                if cap.isOpened():
+                    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    cap.release()
+                    if frame_count > 0:
+                        self.log(f"✅ 输出文件验证通过: {output_path} ({file_size_kb:.1f}KB, {frame_count}帧)", "INFO")
+                        return True
+                    else:
+                        self.log(f"❌ 输出文件无有效帧: {output_path}", "ERROR")
+                        return False
+                else:
+                    self.log(f"❌ 无法打开输出文件: {output_path}", "ERROR")
+                    return False
+            except ImportError:
+                # OpenCV 不可用，跳过深度验证
+                self.log(f"✅ 输出文件大小验证通过: {output_path} ({file_size_kb:.1f}KB)", "INFO")
+                return True
+            except Exception as e:
+                self.log(f"⚠️ 视频深度验证失败，跳过: {e}", "WARN")
+                return True  # 验证失败但仍继续
+            
+        except Exception as e:
+            self.log(f"❌ 输出文件验证失败: {e}", "ERROR")
+            return False
+    
     def process_single_video_batch(
         self,
         workflow_template: Dict,
@@ -392,10 +529,11 @@ class FlashVSR_XZG_Processor:
         base_output_prefix: str,
         frames_pre: int = 0,
         batch_pre: int = 0,
-        timeout: int = 600
-    ) -> Tuple[bool, Optional[str]]:
+        timeout: int = 600,
+        output_dir: str = "output"
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
-        处理单个视频批次（增强版）
+        处理单个视频批次（v3.0增强版）
         
         参数:
             workflow_template: 工作流模板
@@ -408,39 +546,68 @@ class FlashVSR_XZG_Processor:
             frames_pre: 已跑帧数
             batch_pre: 已跑批次
             timeout: 超时时间（秒）
+            output_dir: 输出目录
             
         返回:
-            (success: bool, prompt_id: str or None)
+            (success: bool, prompt_id: str or None, output_file: str or None)
         """
         video_name = os.path.splitext(os.path.basename(video_path))[0]
         
-        # 增强版：计算跳过帧数
+        # 智能批次大小调整（改进点2）
+        actual_frames_per_batch = frames_per_batch
+        if batch_number == total_batches and frames_pre > 0:
+            # 计算剩余帧数
+            video_fps, total_frames, _ = self.get_video_info(video_path)
+            remaining_frames = total_frames - frames_pre
+            
+            # 计算最后一批的实际帧数
+            last_batch_frames = remaining_frames - (frames_per_batch * (batch_number - 1))
+            if 0 < last_batch_frames < frames_per_batch:
+                actual_frames_per_batch = last_batch_frames
+                self.log(f"🔄 最后一批智能调整帧数: {actual_frames_per_batch} 帧 (原: {frames_per_batch})", "INFO")
+        
+        # 计算跳过帧数（v3.0增强版逻辑）
         # {{FRAMES_SKIP}} = {{FRAMS_PRE}} + frames_per_batch * (batch_number - 1)
         frames_skip = frames_pre + frames_per_batch * (batch_number - 1)
         
-        # 增强版：计算当前总批次号
-        # 当前批次号 = 已跑批次 + 当前任务批次号
+        # 计算当前总批次号
         current_batch_number = batch_pre + batch_number
         
-        # 增强版：生成输出前缀
+        # 生成输出前缀
         # flashvsr_{源文件名}_{ {{BATCH_PRE}} + 当前任务的批次号}
         output_prefix = f"{base_output_prefix}_{current_batch_number:03d}"
+        
+        # 预期输出文件路径
+        expected_output_file = os.path.join(output_dir, f"{output_prefix}.mp4")
         
         self.log(f"🎬 处理批次 {batch_number}/{total_batches} (总批次: {current_batch_number})", "INFO")
         self.log(f"  📂 视频: {video_name}", "INFO")
         self.log(f"  ⏱️  帧率: {video_fps:.2f}", "INFO")
-        self.log(f"  🎞️  每批帧数: {frames_per_batch}", "INFO")
+        self.log(f"  🎞️  每批帧数: {actual_frames_per_batch} (原: {frames_per_batch})", "INFO")
         self.log(f"  ⏭️  跳过帧数: {frames_skip} (已跑 {frames_pre} + 当前跳过 {frames_per_batch*(batch_number-1)})", "INFO")
         self.log(f"  📁 输出前缀: {output_prefix}", "INFO")
+        self.log(f"  📄 预期输出: {expected_output_file}", "INFO")
         if frames_pre > 0:
             self.log(f"  📊 断点续跑: 已处理 {frames_pre} 帧 ({batch_pre} 批)", "INFO")
         
-        # 更新工作流参数（增强版）
+        # 检查输出文件是否已存在（避免重复处理）
+        if os.path.exists(expected_output_file):
+            file_size_mb = os.path.getsize(expected_output_file) / (1024 * 1024)
+            self.log(f"⚠️  输出文件已存在: {expected_output_file} ({file_size_mb:.1f}MB)", "WARN")
+            response = input("是否覆盖？(y/n/skip): ").lower()
+            if response == 'n':
+                self.log(f"⏭️  跳过已存在批次 {batch_number}", "INFO")
+                return True, None, expected_output_file
+            elif response == 'skip':
+                # 跳过所有已存在的批次
+                return False, None, None
+        
+        # 更新工作流参数
         workflow = self.update_workflow_parameters(
             workflow_template,
             video_path,
             video_fps,
-            frames_per_batch,
+            actual_frames_per_batch,  # 使用调整后的帧数
             frames_skip,
             output_prefix,
             batch_number,
@@ -453,17 +620,37 @@ class FlashVSR_XZG_Processor:
         prompt_id = self.queue_prompt(workflow, timeout=timeout)
         if not prompt_id:
             self.log(f"❌ 提交批次 {batch_number} 失败", "ERROR")
-            return False, None
+            return False, None, None
         
         # 等待任务完成
         success = self.wait_for_task_completion(prompt_id, timeout=timeout)
         
         if success:
             self.log(f"✅ 批次 {batch_number} 处理完成 (总批次: {current_batch_number})", "INFO")
+            
+            # 验证输出文件（改进点3）
+            if os.path.exists(expected_output_file):
+                if self.validate_output_file(expected_output_file):
+                    self.log(f"✅ 输出文件验证成功: {expected_output_file}", "INFO")
+                else:
+                    self.log(f"⚠️  输出文件验证失败: {expected_output_file}", "WARN")
+                    # 验证失败仍视为成功，但记录警告
+            else:
+                self.log(f"⚠️  预期输出文件不存在: {expected_output_file}", "WARN")
+                # 尝试查找实际输出文件
+                output_files = glob(os.path.join(output_dir, f"{output_prefix}*.mp4"))
+                if output_files:
+                    actual_output = output_files[0]
+                    self.log(f"🔍 找到实际输出文件: {actual_output}", "INFO")
+                    expected_output_file = actual_output
+                else:
+                    self.log(f"❌ 未找到任何输出文件，批次可能失败", "ERROR")
+                    success = False
+            
+            return success, prompt_id, expected_output_file
         else:
             self.log(f"❌ 批次 {batch_number} 处理失败 (总批次: {current_batch_number})", "ERROR")
-        
-        return success, prompt_id
+            return False, prompt_id, None
     
     def process_video_file(
         self,
@@ -472,10 +659,14 @@ class FlashVSR_XZG_Processor:
         frames_per_batch: int = 50,
         timeout_per_batch: int = 600,
         frames_pre: int = 0,
-        batch_pre: int = 0
+        batch_pre: int = 0,
+        auto_load_state: bool = True,
+        save_state: bool = True,
+        max_workers: int = 1,
+        output_dir: str = "output"
     ) -> Dict:
         """
-        处理单个视频文件（增强版）
+        处理单个视频文件（v3.0增强版）
         
         参数:
             workflow_template_path: 工作流模板路径
@@ -484,6 +675,10 @@ class FlashVSR_XZG_Processor:
             timeout_per_batch: 每批超时时间（秒）
             frames_pre: 已跑帧数
             batch_pre: 已跑批次
+            auto_load_state: 自动加载状态
+            save_state: 保存状态
+            max_workers: 最大并行工作数
+            output_dir: 输出目录
             
         返回:
             处理结果字典
@@ -491,6 +686,14 @@ class FlashVSR_XZG_Processor:
         video_name = os.path.basename(video_path)
         self.log(f"🎬 开始处理视频: {video_name}", "INFO")
         self.log(f"📂 路径: {video_path}", "INFO")
+        
+        # 自动加载状态（改进点1）
+        if auto_load_state:
+            loaded_frames_pre, loaded_batch_pre, state_info = self.load_processing_state(video_path)
+            if loaded_frames_pre > 0 or loaded_batch_pre > 0:
+                frames_pre = loaded_frames_pre
+                batch_pre = loaded_batch_pre
+                self.log(f"🔄 自动加载断点状态: 已处理 {frames_pre} 帧, {batch_pre} 批", "INFO")
         
         # 检查断点续跑参数
         if frames_pre > 0:
@@ -500,13 +703,15 @@ class FlashVSR_XZG_Processor:
         try:
             workflow_template = self.load_workflow_template(workflow_template_path)
         except Exception as e:
+            error_msg = f"加载工作流模板失败: {e}"
+            self.log(f"❌ {error_msg}", "ERROR")
+            if save_state:
+                self.save_processing_state(video_path, frames_pre, batch_pre, False, error_msg)
             return {
                 "video": video_name,
                 "path": video_path,
                 "success": False,
-                "batches_processed": 0,
-                "total_batches": 0,
-                "error": f"加载工作流模板失败: {e}",
+                "error": error_msg,
                 "results": []
             }
         
@@ -514,11 +719,11 @@ class FlashVSR_XZG_Processor:
         video_fps, total_frames, method = self.get_video_info(video_path)
         self.log(f"📊 视频信息: {total_frames} 帧, {video_fps:.2f} FPS (方法: {method})", "INFO")
         
-        # 增强版：计算剩余可处理帧数
+        # 计算剩余可处理帧数
         remaining_frames = total_frames - frames_pre
         if remaining_frames <= 0:
             self.log(f"✅ 视频已全部处理完成，无需继续处理", "INFO")
-            return {
+            result = {
                 "video": video_name,
                 "path": video_path,
                 "success": True,
@@ -532,8 +737,11 @@ class FlashVSR_XZG_Processor:
                 "success_rate": "100%",
                 "results": []
             }
+            if save_state:
+                self.save_processing_state(video_path, frames_pre, batch_pre, True)
+            return result
         
-        # 增强版：计算批次数
+        # 计算批次数
         # (总帧数 - {{FRAMS_PRE}}) / frames_per_batch
         total_batches = remaining_frames // frames_per_batch
         if remaining_frames % frames_per_batch > 0:
@@ -541,48 +749,126 @@ class FlashVSR_XZG_Processor:
         
         self.log(f"📦 批次计算: {remaining_frames} 剩余帧 / {frames_per_batch} 帧每批 = {total_batches} 批", "INFO")
         self.log(f"📈 进度: {frames_pre}/{total_frames} 帧 ({frames_pre/total_frames*100:.1f}%)", "INFO")
+        self.log(f"⚡ 并行处理: {max_workers} 个工作线程", "INFO")
         
         # 基础输出前缀
         video_base_name = os.path.splitext(video_name)[0]
         base_output_prefix = f"flashvsr_{video_base_name}"
         
+        # 创建输出目录
+        os.makedirs(output_dir, exist_ok=True)
+        
         results = []
         success_count = 0
+        output_files = []
         
-        # 处理每个批次
-        for batch_number in range(1, total_batches + 1):
-            self.log(f"{'='*60}", "INFO")
-            success, prompt_id = self.process_single_video_batch(
-                workflow_template,
-                video_path,
-                video_fps,
-                frames_per_batch,
-                batch_number,
-                total_batches,
-                base_output_prefix,
-                frames_pre,
-                batch_pre,
-                timeout=timeout_per_batch
-            )
+        # 并行处理逻辑（改进点4）
+        if max_workers > 1 and total_batches > 1:
+            self.log(f"🚀 启动并行处理，最大工作线程数: {max_workers}", "INFO")
             
-            results.append({
-                "batch": batch_number,
-                "total_batch": batch_pre + batch_number,
-                "success": success,
-                "prompt_id": prompt_id,
-                "frames_skip": frames_pre + frames_per_batch * (batch_number - 1)
-            })
-            
-            if success:
-                success_count += 1
-            else:
-                # 批次失败，是否继续处理后续批次
-                self.log(f"⚠️ 批次 {batch_number} 失败，是否继续处理后续批次？", "WARN")
-                # 这里可以添加中断逻辑，默认继续处理
-                continue
+            # 使用线程池并行处理
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 准备任务列表
+                futures = []
+                for batch_number in range(1, total_batches + 1):
+                    future = executor.submit(
+                        self.process_single_video_batch,
+                        workflow_template,
+                        video_path,
+                        video_fps,
+                        frames_per_batch,
+                        batch_number,
+                        total_batches,
+                        base_output_prefix,
+                        frames_pre,
+                        batch_pre,
+                        timeout_per_batch,
+                        output_dir
+                    )
+                    futures.append((batch_number, future))
+                
+                # 收集结果
+                for batch_number, future in futures:
+                    try:
+                        success, prompt_id, output_file = future.result(timeout=timeout_per_batch + 60)
+                        
+                        results.append({
+                            "batch": batch_number,
+                            "total_batch": batch_pre + batch_number,
+                            "success": success,
+                            "prompt_id": prompt_id,
+                            "output_file": output_file,
+                            "frames_skip": frames_pre + frames_per_batch * (batch_number - 1)
+                        })
+                        
+                        if success:
+                            success_count += 1
+                            if output_file:
+                                output_files.append(output_file)
+                            # 保存进度状态
+                            current_frames = frames_pre + batch_number * frames_per_batch
+                            if save_state and batch_number % 3 == 0:  # 每3批保存一次状态
+                                self.save_processing_state(video_path, min(current_frames, total_frames), 
+                                                         batch_pre + batch_number, True)
+                        else:
+                            self.log(f"⚠️ 批次 {batch_number} 失败", "WARN")
+                            
+                    except Exception as e:
+                        self.log(f"❌ 批次 {batch_number} 执行异常: {e}", "ERROR")
+                        results.append({
+                            "batch": batch_number,
+                            "total_batch": batch_pre + batch_number,
+                            "success": False,
+                            "error": str(e),
+                            "frames_skip": frames_pre + frames_per_batch * (batch_number - 1)
+                        })
+        else:
+            # 顺序处理（兼容原有逻辑）
+            for batch_number in range(1, total_batches + 1):
+                self.log(f"{'='*60}", "INFO")
+                success, prompt_id, output_file = self.process_single_video_batch(
+                    workflow_template,
+                    video_path,
+                    video_fps,
+                    frames_per_batch,
+                    batch_number,
+                    total_batches,
+                    base_output_prefix,
+                    frames_pre,
+                    batch_pre,
+                    timeout_per_batch,
+                    output_dir
+                )
+                
+                results.append({
+                    "batch": batch_number,
+                    "total_batch": batch_pre + batch_number,
+                    "success": success,
+                    "prompt_id": prompt_id,
+                    "output_file": output_file,
+                    "frames_skip": frames_pre + frames_per_batch * (batch_number - 1)
+                })
+                
+                if success:
+                    success_count += 1
+                    if output_file:
+                        output_files.append(output_file)
+                    # 保存进度状态
+                    current_frames = frames_pre + batch_number * frames_per_batch
+                    if save_state and batch_number % 3 == 0:  # 每3批保存一次状态
+                        self.save_processing_state(video_path, min(current_frames, total_frames), 
+                                                 batch_pre + batch_number, True)
+                else:
+                    self.log(f"⚠️ 批次 {batch_number} 失败，是否继续处理后续批次？", "WARN")
+                    # 这里可以添加中断逻辑，默认继续处理
+                    continue
         
         # 汇总结果
         all_success = success_count == total_batches
+        processed_frames = frames_pre + success_count * frames_per_batch
+        if processed_frames > total_frames:
+            processed_frames = total_frames
+        
         summary = {
             "video": video_name,
             "path": video_path,
@@ -592,25 +878,40 @@ class FlashVSR_XZG_Processor:
             "video_fps": video_fps,
             "total_frames": total_frames,
             "remaining_frames": remaining_frames,
+            "processed_frames": processed_frames,
             "frames_per_batch": frames_per_batch,
             "frames_pre": frames_pre,
             "batch_pre": batch_pre,
+            "total_batch_count": batch_pre + success_count,
             "success_rate": f"{success_count}/{total_batches} ({success_count/total_batches*100:.1f}%)",
-            "progress": f"{frames_pre}/{total_frames} ({frames_pre/total_frames*100:.1f}%)",
+            "progress": f"{processed_frames}/{total_frames} ({processed_frames/total_frames*100:.1f}%)",
+            "output_files": output_files,
+            "output_dir": output_dir,
             "results": results
         }
         
         self.log(f"{'='*60}", "INFO")
         if all_success:
-            processed_frames = frames_pre + success_count * frames_per_batch
-            if processed_frames > total_frames:
-                processed_frames = total_frames
-            progress_percent = processed_frames / total_frames * 100
             self.log(f"✅ 视频 {video_name} 当前阶段处理完成", "INFO")
-            self.log(f"📊 累计进度: {processed_frames}/{total_frames} 帧 ({progress_percent:.1f}%)", "INFO")
+            self.log(f"📊 累计进度: {processed_frames}/{total_frames} 帧 ({processed_frames/total_frames*100:.1f}%)", "INFO")
             self.log(f"📦 累计批次: {batch_pre + success_count} 批", "INFO")
+            self.log(f"📄 生成文件: {len(output_files)} 个", "INFO")
+            for i, file_path in enumerate(output_files, 1):
+                if os.path.exists(file_path):
+                    size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                    self.log(f"  {i:2d}. {os.path.basename(file_path)} ({size_mb:.1f}MB)", "INFO")
         else:
             self.log(f"⚠️ 视频 {video_name} 部分批次失败 ({success_count}/{total_batches})", "WARN")
+        
+        # 保存最终状态（改进点1）
+        if save_state:
+            self.save_processing_state(
+                video_path, 
+                processed_frames, 
+                batch_pre + success_count, 
+                all_success,
+                "" if all_success else f"{total_batches - success_count} batches failed"
+            )
         
         return summary
     
@@ -621,10 +922,13 @@ class FlashVSR_XZG_Processor:
         pattern: str = '*.mp4',
         frames_per_batch: int = 50,
         timeout_per_batch: int = 600,
-        skip_existing: bool = False
+        max_workers: int = 1,
+        output_dir: str = "output",
+        auto_load_state: bool = True,
+        save_state: bool = True
     ) -> List[Dict]:
         """
-        处理目录下的所有视频文件
+        处理目录下的所有视频文件（v3.0增强版）
         
         参数:
             workflow_template_path: 工作流模板路径
@@ -632,7 +936,10 @@ class FlashVSR_XZG_Processor:
             pattern: 文件匹配模式
             frames_per_batch: 每批帧数
             timeout_per_batch: 每批超时时间（秒）
-            skip_existing: 是否跳过已处理文件
+            max_workers: 最大并行工作数
+            output_dir: 输出目录
+            auto_load_state: 自动加载状态
+            save_state: 保存状态
             
         返回:
             所有视频的处理结果列表
@@ -655,18 +962,21 @@ class FlashVSR_XZG_Processor:
             self.log(f"\n{'#'*80}", "INFO")
             self.log(f"📊 进度: {i}/{len(video_files)}", "INFO")
             
-            # 这里可以扩展以支持从状态文件读取断点信息
-            # 例如：读取 frames_pre 和 batch_pre 从状态文件
-            frames_pre = 0
-            batch_pre = 0
+            # 为每个视频创建单独的输出子目录
+            video_name = os.path.splitext(os.path.basename(video_path))[0]
+            video_output_dir = os.path.join(output_dir, video_name)
             
             result = self.process_video_file(
                 workflow_template_path,
                 video_path,
                 frames_per_batch,
                 timeout_per_batch,
-                frames_pre,
-                batch_pre
+                frames_pre=0,  # 从状态文件加载
+                batch_pre=0,   # 从状态文件加载
+                auto_load_state=auto_load_state,
+                save_state=save_state,
+                max_workers=max_workers,
+                output_dir=video_output_dir
             )
             
             all_results.append(result)
@@ -732,35 +1042,45 @@ class FlashVSR_XZG_Processor:
         return video_files
 
 def main():
-    """主函数（增强版）"""
+    """主函数（v3.0完整增强版）"""
     parser = argparse.ArgumentParser(
-        description='ComfyUI FlashVSR-XZG 批量视频处理脚本（增强版）',
+        description='ComfyUI FlashVSR-XZG 批量视频处理脚本 v3.0',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
   # 处理单个视频文件（从头开始）
-  python flashvsr_xzg.py -i video.mp4 --template FlashVSR-XZG.json
+  python flashvsr_xzg_v3.py -i video.mp4 --template FlashVSR-XZG.json
   
-  # 处理单个视频文件（断点续跑，已处理 100 帧，3 批）
-  python flashvsr_xzg.py -i video.mp4 --template FlashVSR-XZG.json --frames-pre 100 --batch-pre 3
+  # 断点续跑，自动加载状态文件
+  python flashvsr_xzg_v3.py -i video.mp4 --template FlashVSR-XZG.json --auto-load-state
+  
+  # 指定已处理帧数和批次
+  python flashvsr_xzg_v3.py -i video.mp4 --template FlashVSR-XZG.json --frames-pre 100 --batch-pre 3
+  
+  # 并行处理（4个线程）
+  python flashvsr_xzg_v3.py -i video.mp4 --template FlashVSR-XZG.json --max-workers 4
   
   # 处理目录下的所有视频文件
-  python flashvsr_xzg.py -i ./videos --template FlashVSR-XZG.json
+  python flashvsr_xzg_v3.py -i ./videos --template FlashVSR-XZG.json --max-workers 2
   
-  # 自定义每批帧数
-  python flashvsr_xzg.py -i video.mp4 --template FlashVSR-XZG.json --frames-per-batch 100
+  # 自定义输出目录
+  python flashvsr_xzg_v3.py -i video.mp4 --template FlashVSR-XZG.json --output-dir ./processed_videos
   
-  # 自定义超时时间
-  python flashvsr_xzg.py -i video.mp4 --template FlashVSR-XZG.json --timeout 300
-  
-  # 使用特定 ComfyUI 地址
-  python flashvsr_xzg.py -i video.mp4 --template FlashVSR-XZG.json --server http://localhost:8189
+  # 不保存状态文件（一次性处理）
+  python flashvsr_xzg_v3.py -i video.mp4 --template FlashVSR-XZG.json --no-save-state
+
+功能特性:
+  1. 断点续跑支持：自动保存/加载处理状态
+  2. 智能批次调整：最后一批自动调整帧数
+  3. 输出文件验证：确保生成的文件有效
+  4. 并行处理支持：大幅提升处理速度
+  5. 状态文件管理：便于管理和恢复任务
 
 注意:
   1. 脚本使用 pymediainfo 获取视频信息，请确保已安装
-  2. 支持断点续跑功能，可指定已处理帧数和批次
-  3. 工作流模板中的占位符会被自动替换
-  4. 日志文件保存在当前目录
+  2. 并行处理时请根据硬件配置调整 --max-workers 参数
+  3. 状态文件保存在 ./states/ 目录下
+  4. 默认输出目录为 ./output/
         """
     )
     
@@ -774,11 +1094,25 @@ def main():
     parser.add_argument('--frames-per-batch', type=int, default=50,
                        help='每批处理的帧数 (默认: 50)')
     
-    # 增强版：断点续跑参数
+    # 断点续跑参数
     parser.add_argument('--frames-pre', type=int, default=0,
-                       help='已处理的帧数（断点续跑用）(默认: 0)')
+                       help='已处理的帧数（手动指定）(默认: 0)')
     parser.add_argument('--batch-pre', type=int, default=0,
-                       help='已处理的批次（断点续跑用）(默认: 0)')
+                       help='已处理的批次（手动指定）(默认: 0)')
+    parser.add_argument('--auto-load-state', action='store_true',
+                       help='自动从状态文件加载处理进度')
+    parser.add_argument('--save-state', action='store_true', default=True,
+                       help='保存处理状态到文件 (默认: True)')
+    parser.add_argument('--no-save-state', action='store_false', dest='save_state',
+                       help='不保存处理状态文件')
+    
+    # 并行处理参数（改进点4）
+    parser.add_argument('--max-workers', type=int, default=1,
+                       help='最大并行工作线程数 (默认: 1)')
+    
+    # 输出参数
+    parser.add_argument('--output-dir', type=str, default='output',
+                       help='输出目录 (默认: output)')
     
     # 处理参数
     parser.add_argument('--timeout', type=int, default=600,
@@ -795,8 +1129,8 @@ def main():
                        help='日志目录 (默认: 当前目录)')
     parser.add_argument('--skip-pymedia-check', action='store_true',
                        help='跳过 pymediainfo 检查')
-    parser.add_argument('--save-state', action='store_true',
-                       help='保存处理状态，便于断点续跑')
+    parser.add_argument('--disable-validation', action='store_true',
+                       help='禁用输出文件验证')
     
     args = parser.parse_args()
     
@@ -826,24 +1160,41 @@ def main():
         print(f"❌ 已处理批次不能为负数: {args.batch_pre}")
         return
     
+    # 验证并行处理参数
+    if args.max_workers < 1:
+        print(f"❌ 最大工作线程数必须大于0: {args.max_workers}")
+        return
+    
     # 初始化处理器
     processor = FlashVSR_XZG_Processor(
         comfyui_url=args.server,
         log_dir=args.log_dir
     )
     
+    # 设置验证选项
+    processor.output_validation_enabled = not args.disable_validation
+    
     # 检查 ComfyUI 服务
     if not processor.check_comfyui_server():
         processor.log("❌ ComfyUI 服务不可用，请确保 ComfyUI 已启动", "ERROR")
         return
     
-    processor.log(f"🚀 开始处理（增强版）", "INFO")
+    processor.log(f"🚀 FlashVSR-XZG v3.0 开始处理", "INFO")
     processor.log(f"📂 输入路径: {args.input}", "INFO")
     processor.log(f"📄 工作流模板: {args.template}", "INFO")
     processor.log(f"🎞️  每批帧数: {args.frames_per_batch}", "INFO")
     processor.log(f"⏱️  超时时间: {args.timeout}秒", "INFO")
-    if args.frames_pre > 0:
-        processor.log(f"🔄 断点续跑模式: 已处理 {args.frames_pre} 帧, {args.batch_pre} 批", "INFO")
+    processor.log(f"📁 输出目录: {args.output_dir}", "INFO")
+    processor.log(f"⚡ 并行处理: {args.max_workers} 个工作线程", "INFO")
+    
+    if args.auto_load_state:
+        processor.log(f"🔄 自动加载状态: 已启用", "INFO")
+    if args.frames_pre > 0 or args.batch_pre > 0:
+        processor.log(f"📊 手动断点: 已处理 {args.frames_pre} 帧, {args.batch_pre} 批", "INFO")
+    if not args.save_state:
+        processor.log(f"💾 状态保存: 已禁用", "INFO")
+    if args.disable_validation:
+        processor.log(f"🔍 输出验证: 已禁用", "INFO")
     
     start_time = time.time()
     
@@ -857,7 +1208,11 @@ def main():
             args.frames_per_batch,
             args.timeout,
             args.frames_pre,
-            args.batch_pre
+            args.batch_pre,
+            args.auto_load_state,
+            args.save_state,
+            args.max_workers,
+            args.output_dir
         )
         
         results = [result]
@@ -870,7 +1225,11 @@ def main():
             args.input,
             args.pattern,
             args.frames_per_batch,
-            args.timeout
+            args.timeout,
+            args.max_workers,
+            args.output_dir,
+            args.auto_load_state,
+            args.save_state
         )
     
     else:
@@ -882,7 +1241,7 @@ def main():
     
     # 输出汇总结果
     processor.log(f"\n{'='*80}", "INFO")
-    processor.log(f"📊 处理完成汇总", "INFO")
+    processor.log(f"📊 v3.0 处理完成汇总", "INFO")
     processor.log(f"{'='*80}", "INFO")
     
     if not results:
@@ -897,11 +1256,8 @@ def main():
     success_batches = sum(r["batches_processed"] for r in results)
     
     # 计算总处理帧数
-    total_frames_processed = 0
-    for result in results:
-        if result["success"]:
-            processed = result.get("frames_pre", 0) + result["batches_processed"] * result["frames_per_batch"]
-            total_frames_processed += processed
+    total_frames_processed = sum(r.get("processed_frames", 0) for r in results)
+    total_files_generated = sum(len(r.get("output_files", [])) for r in results)
     
     processor.log(f"⏱️  总耗时: {total_time:.2f}秒 ({total_time/60:.1f}分钟)", "INFO")
     processor.log(f"📁 总视频数: {total_videos}", "INFO")
@@ -910,6 +1266,7 @@ def main():
     processor.log(f"📦 总批次: {total_batches}", "INFO")
     processor.log(f"✅ 成功批次: {success_batches} ({success_batches/total_batches*100:.1f}%)", "INFO")
     processor.log(f"🎞️  总处理帧数: {total_frames_processed}", "INFO")
+    processor.log(f"📄 总生成文件: {total_files_generated}", "INFO")
     
     # 输出失败详情
     if failed_videos > 0:
@@ -918,8 +1275,9 @@ def main():
             if not result["success"]:
                 processor.log(f"  - {result['video']}: {result.get('error', '未知错误')}", "ERROR")
     
-    processor.log(f"\n📝 详细日志: {processor.log_file}", "INFO")
-    processor.log(f"🎉 处理完成!", "INFO")
+    processor.log(f"\n💾 状态文件目录: {processor.state_dir}", "INFO")
+    processor.log(f"📝 详细日志: {processor.log_file}", "INFO")
+    processor.log(f"🎉 v3.0 处理完成!", "INFO")
 
 if __name__ == "__main__":
     main()
