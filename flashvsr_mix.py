@@ -686,7 +686,7 @@ class FlashVSR_XZG_MIX_Processor:
         current_batch_number = batch_pre + batch_number
         
         # 生成输出前缀
-        output_prefix = f"{base_output_prefix}_{current_batch_number:03d}_{frames_skip}+{frames_per_batch}"
+        output_prefix = f"{base_output_prefix}_{current_batch_number:03d}_{frames_skip}+{actual_frames_per_batch}"
         
         # 计算输入和输出宽度（对齐到128） - 只在模板有占位符时使用
         in_width_aligned = self.calculate_aligned_dimension(video_width, 128)
