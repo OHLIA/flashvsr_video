@@ -175,7 +175,7 @@ flashvsr_mix.py: error: the following arguments are required: -i/--input
 
 [flashvsr 视频高清之路-工作流及教程](https://www.bilibili.com/video/BV1FwBjB6Eqk/?spm_id_from=333.1387.upload.video_card.click)
 
-[FlashVSR-1.1 视高清放大，Block-Sparse-Attention 安装，ComfyUI-FlashVSR_Ultra_Fast](<[FlashVSR-1.1视高清放大，Block-Sparse-Attention安装，ComfyUI-FlashVSR_Ultra_Fast_哔哩哔哩_bilibili](https://www.bilibili.com/video/BV1tRk2BnELe/?spm_id_from=333.1387.search.video_card.click&vd_source=2d78d4a65cda078120c2095d8b0592a3)>)
+[FlashVSR-1.1 视高清放大，Block-Sparse-Attention 安装，ComfyUI-FlashVSR_Ultra_Fast](https://www.bilibili.com/video/BV1tRk2BnELe/?spm_id_from=333.1387.search.video_card.click&vd_source=2d78d4a65cda078120c2095d8b0592a3)
 
 [不限视频帧数，视频本地 4 倍高清放大，基于*FlashVSR*](https://www.bilibili.com/video/BV1udZVBvExi/?spm_id_from=333.1387.search.video_card.click)
 
