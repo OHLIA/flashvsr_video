@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ComfyUI FlashVSR-XZG 高级批量视频处理脚本（混合版）
-兼容多种 API 模板，包括 api_flashvsr_mix.json 和 api_flashvsr_mix_4K.json
-版本: 2.0
-增强模板兼容性和输出文件处理
+ComfyUI FlashVSR-MIX 高级批量视频处理脚本（混合版）
+by 好奇心害死薛定谔的猫
 """
 
 import json
@@ -36,7 +34,7 @@ except ImportError:
 class FlashVSR_XZG_MIX_Processor:
     def __init__(self, comfyui_url: str = "http://127.0.0.1:8188", log_dir: str = "."):
         """
-        初始化 ComfyUI FlashVSR-XZG MIX 处理器
+        初始化 ComfyUI FlashVSR-MIX MIX 处理器
         
         参数:
             comfyui_url: ComfyUI 服务器地址
@@ -61,7 +59,7 @@ class FlashVSR_XZG_MIX_Processor:
         # 初始化日志
         self._init_log_file()
         
-        self.log("📱 初始化 FlashVSR-XZG MIX 处理器 v2.0", "INFO")
+        self.log("📱 初始化 FlashVSR-MIX MIX 处理器 v2.0", "INFO")
         self.log(f"🔗 ComfyUI 地址: {self.comfyui_url}", "INFO")
         self.log(f"📝 日志文件: {self.log_file}", "INFO")
         self.log(f"💾 状态目录: {self.state_dir}", "INFO")
@@ -73,7 +71,7 @@ class FlashVSR_XZG_MIX_Processor:
         """初始化日志文件"""
         with open(self.log_file, 'a', encoding='utf-8') as f:
             f.write(f"{'='*80}\n")
-            f.write(f"FlashVSR-XZG MIX 处理日志 v2.0\n")
+            f.write(f"FlashVSR-MIX MIX 处理日志 v2.0\n")
             f.write(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"工作流模板: 兼容多种 API 模板\n")
             f.write(f"{'='*80}\n\n")
@@ -1271,7 +1269,7 @@ class FlashVSR_XZG_MIX_Processor:
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
-        description='ComfyUI FlashVSR-XZG MIX 批量视频处理脚本',
+        description='ComfyUI FlashVSR-MIX MIX 批量视频处理脚本',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
@@ -1421,7 +1419,7 @@ def main():
         processor.log("ComfyUI 服务不可用，请确保 ComfyUI 已启动", "ERROR")
         return
     
-    processor.log(f"FlashVSR-XZG MIX 开始处理", "INFO")
+    processor.log(f"FlashVSR-MIX MIX 开始处理", "INFO")
     processor.log(f"输入路径: {args.input}", "INFO")
     processor.log(f"工作流模板: {args.template}", "INFO")
     processor.log(f"每批帧数: {args.frames_per_batch}", "INFO")
@@ -1505,7 +1503,7 @@ def main():
     
     # 输出汇总结果
     processor.log(f"\n{'='*80}", "INFO")
-    processor.log(f"FlashVSR-XZG MIX 处理完成汇总", "INFO")
+    processor.log(f"FlashVSR-MIX MIX 处理完成汇总", "INFO")
     processor.log(f"{'='*80}", "INFO")
     
     if not results:
@@ -1552,7 +1550,7 @@ def main():
     
     processor.log(f"\n状态文件目录: {processor.state_dir}", "INFO")
     processor.log(f"详细日志: {processor.log_file}", "INFO")
-    processor.log(f"FlashVSR-XZG MIX 处理完成!", "INFO")
+    processor.log(f"FlashVSR-MIX MIX 处理完成!", "INFO")
 
 if __name__ == "__main__":
     main()
